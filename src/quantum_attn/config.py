@@ -19,6 +19,8 @@ class attention:
 
     fast_math = os.getenv("QUANTUM_ATTN_FAST_MATH", "1") == "1"
 
+    force_eager_fallback = os.getenv("QUANTUM_ATTN_FORCE_EAGER_FALLBACK") == "1"
+
 
 try:
     from torch.utils._config_module import install_config_module

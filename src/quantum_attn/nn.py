@@ -100,15 +100,29 @@ def fp8_attention_forward(
             query,
             key,
             value,
+            scale_q,
+            scale_k,
+            scale_v,
             attn_mask=attn_mask,
             dropout_p=dropout_p,
             is_causal=is_causal,
             scale=scale,
-            scale_q=scale_q,
-            scale_k=scale_k,
-            scale_v=scale_v,
         )
         return out
+
+    if config.attention.force_eager_fallback:
+        return quantum_attn_ops.fp8_attention_forward(
+            query,
+            key,
+            value,
+            scale_q,
+            scale_k,
+            scale_v,
+            attn_mask=attn_mask,
+            dropout_p=dropout_p,
+            is_causal=is_causal,
+            scale=scale,
+        )
 
     if not torch._dynamo.is_dynamo_supported():
         raise RuntimeError("fp8_attention_forward requires dynamo support")
@@ -129,12 +143,12 @@ def fp8_attention_forward(
                     query,
                     key,
                     value,
+                    scale_q,
+                    scale_k,
+                    scale_v,
                     attn_mask=attn_mask,
                     dropout_p=dropout_p,
                     is_causal=is_causal,
                     scale=scale,
-                    scale_q=scale_q,
-                    scale_k=scale_k,
-                    scale_v=scale_v,
                 )
                 return out

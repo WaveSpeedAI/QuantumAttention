@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 
 from quantum_attn.nn import dynamically_quantize_fp8, fp8_attention_forward
@@ -9,7 +11,7 @@ def fp8_attn_func(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    attn_mask: torch.Tensor,
+    attn_mask: Optional[torch.Tensor] = None,
     dropout_p: float = 0.0,
     is_causal: bool = False,
     *,
@@ -36,7 +38,7 @@ def dynamic_fp8_attn_func(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    attn_mask: torch.Tensor,
+    attn_mask: Optional[torch.Tensor] = None,
     dropout_p: float = 0.0,
     is_causal: bool = False,
     *,
@@ -46,7 +48,7 @@ def dynamic_fp8_attn_func(
     key, scale_k = dynamically_quantize_fp8(key, reduction_dim=-1)
     value, scale_v = dynamically_quantize_fp8(value, reduction_dim=-2)
 
-    return dynamically_quantize_fp8(
+    return fp8_attention_forward(
         query,
         key,
         value,
