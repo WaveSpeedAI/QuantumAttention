@@ -43,5 +43,6 @@ def test_dynamic_fp8_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, for
             is_causal=is_causal,
         )
 
-        mean_diff = (qattn_out - sdpa_out).abs().mean()
-        assert mean_diff < 1e-2, f"mean_diff: {mean_diff}"
+        rmse = torch.sqrt(F.mse_loss(qattn_out, sdpa_out))
+        print(f"RMSE: {rmse}")
+        assert rmse < 1e-2, f"RMSE: {rmse}"
