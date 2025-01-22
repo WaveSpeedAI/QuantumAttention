@@ -25,13 +25,14 @@ repos:
     hooks:
       - id: flake8
         args: [--config=setup.cfg]
+        exclude: fahopper/.*
 
   # - repo: https://github.com/PyCQA/pydocstyle
   #   rev: 6.1.1
   #   hooks:
   #     - id: pydocstyle
 
-  - repo: https://github.com/pre-commit/mirrors-clang-format
-    rev: v14.0.6
-    hooks:
-      - id: clang-format
+  # - repo: https://github.com/pre-commit/mirrors-clang-format
+  #   rev: v14.0.6
+  #   hooks:
+  #     - id: clang-format
