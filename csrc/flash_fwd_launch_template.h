@@ -12,15 +12,20 @@
 #include "cutlass/device_kernel.h" // For device_kernel
 #include <cutlass/kernel_hardware_info.h>
 
-#include "epilogue_fwd.hpp"
-#include "flash.h"
-#include "flash_fwd_kernel_sm80.h"
-#include "flash_fwd_kernel_sm90.h"
-#include "mainloop_fwd_sm80.hpp"
-#include "mainloop_fwd_sm90_tma_gmma_ws.hpp"
 #include "static_switch.h"
+
+#include "flash.h"
+
 #include "tile_scheduler.hpp"
 #include "tile_size.h"
+
+#include "flash_fwd_kernel_sm80.h"
+#include "flash_fwd_kernel_sm90.h"
+
+#include "mainloop_fwd_sm80.hpp"
+#include "mainloop_fwd_sm90_tma_gmma_ws.hpp"
+
+#include "epilogue_fwd.hpp"
 
 using namespace cute;
 
