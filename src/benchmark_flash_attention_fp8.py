@@ -5,10 +5,10 @@ import time
 
 import torch
 import torch.nn.functional as F
+import torch.utils.benchmark as benchmark
 
 from einops import rearrange
 
-from flash_attn.utils.benchmark import benchmark_forward
 from flash_attn_interface import _flash_attn_forward
 
 try:
@@ -25,6 +25,35 @@ try:
     import cudnn
 except ImportError:
     cudnn = None
+
+
+def benchmark_forward(
+    fn,
+    *inputs,
+    repeats=10,
+    desc="",
+    verbose=True,
+    amp=False,
+    amp_dtype=torch.float16,
+    **kwinputs,
+):
+    """Use Pytorch Benchmark on the forward pass of an arbitrary function."""
+    if verbose:
+        print(desc, "- Forward pass")
+
+    def amp_wrapper(*inputs, **kwinputs):
+        with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp):
+            fn(*inputs, **kwinputs)
+
+    t = benchmark.Timer(
+        stmt="fn_amp(*inputs, **kwinputs)",
+        globals={"fn_amp": amp_wrapper, "inputs": inputs, "kwinputs": kwinputs},
+        num_threads=torch.get_num_threads(),
+    )
+    m = t.timeit(repeats)
+    if verbose:
+        print(m)
+    return t, m
 
 
 def convert_to_cudnn_type(torch_type):
@@ -340,6 +369,13 @@ for causal in causal_vals:
             descale_k = torch.tensor([1.0], dtype=torch.float32, device="cuda")
             descale_v = torch.tensor([1.0], dtype=torch.float32, device="cuda")
 
+            descale_q = descale_q[..., None]
+            descale_k = descale_k[..., None]
+            descale_v = descale_v[..., None]
+            descale_q = descale_q.expand(batch_size, nheads)
+            descale_k = descale_k.expand(batch_size, nheads)
+            descale_v = descale_v.expand(batch_size, nheads)
+
             # f = time_fwd(flash_attn_func, q, k, v, causal=causal, repeats=repeats, verbose=False)
             f = time_fwd(
                 _flash_attn_forward,
@@ -406,7 +442,6 @@ for causal in causal_vals:
                 print(
                     f"{method} fwd: {speed_f[config, method]:.2f} TFLOPs/s, {time_f[config, method] * 1e3} ms, "
                 )
-
 
 # with open('flash3_attn_time.plk', 'wb') as fp:
 #     pickle.dump((time_f, time_b, time_f_b), fp, protocol=pickle.HIGHEST_PROTOCOL)
