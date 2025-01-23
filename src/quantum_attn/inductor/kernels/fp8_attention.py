@@ -390,7 +390,7 @@ def _attn_fwd_inner(
 
     stride_v_scale_z = {{{{stride("V_scale", 0)}}}}
     stride_v_scale_h = {{{{stride("V_scale", 1)}}}}
-    stride_v_scale_d = {{{{stride("V_scale", 3)}}}}
+    stride_v_scale_d = {{{{stride("V_scale", 2)}}}}
 
     start_m = tl.program_id(0)
     off_hz = tl.program_id(1)
