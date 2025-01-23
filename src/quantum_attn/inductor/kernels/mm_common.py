@@ -25,10 +25,10 @@ def mm_options(c, sym_m, sym_n, sym_k, layout, b_prologue_cast_type=None, optimi
     options["ENABLE_FAST_MATH"] = (
         config.triton.enable_fast_math
         and checks.has_triton_language("inline_asm_elementwise")
-        and checks.is_nvidia_cuda(layout)
+        and checks.is_nvidia_cuda()
     )
     device_capability = (
-        torch.cuda.get_device_capability(layout.device.index or 0) if checks.is_nvidia_cuda(layout) else (0, 0)
+        torch.cuda.get_device_capability(layout.device.index or 0) if checks.is_nvidia_cuda() else (0, 0)
     )
     cuda_arch = device_capability[0] * 100 + device_capability[1] * 10
     options["CUDA_ARCH"] = cuda_arch
