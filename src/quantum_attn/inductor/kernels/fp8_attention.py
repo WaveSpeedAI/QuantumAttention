@@ -793,6 +793,7 @@ def generate_fp8_attention_template_choices(
             NUM_STAGES=fa_config.num_stages,
             FAST_SOFTMAX=fast_softmax,
             USE_FP16_COMPUTE=scale_q.get_dtype() == torch.float16 and config.triton.allow_reduced_precision_compute,
+            ACC_TYPE=torch.float32,
             **mm_options_,
         )
 
