@@ -267,7 +267,7 @@ def _attn_fwd_inner(
         start_n = tl.multiple_of(start_n, BLOCK_N)
 
         k_scale = tl.load(K_scale_block_ptr, boundary_check=(0,)).to(tl.float32)
-        K_scale_block_ptr = tl.advance(K_scale_block_ptr, (0, BLOCK_N))
+        K_scale_block_ptr = tl.advance(K_scale_block_ptr, (BLOCK_N,))
 
         # -- compute qk ----
         if BLOCK_DMODEL == BLOCK_K:
@@ -563,7 +563,7 @@ def _attn_fwd_inner(
         v_scale = tl.load(V_scale_block_ptr, boundary_check=(0,)).to(acc_0.dtype)
 
 {{% if i + 1 < TILES %}}
-        K_scale_block_ptr = tl.advance(K_scale_block_ptr, (BLOCK_K,))
+        V_scale_block_ptr = tl.advance(V_scale_block_ptr, (BLOCK_K,))
 {{% endif %}}
         acc_{{{{i}}}} = mul(acc_{{{{i}}}}, v_scale[None, :])
 
