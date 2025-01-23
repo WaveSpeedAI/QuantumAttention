@@ -452,14 +452,6 @@ def _attn_fwd_inner(
             block_shape=(BLOCK_K,),
             order=(0,),
         )
-        # O_block_ptr = tl.make_block_ptr(
-        #     base=Out + o_offset,
-        #     shape=(N_CTX_Q, D),
-        #     strides=(stride_om, stride_on),
-        #     offsets=(start_m * BLOCK_M, 0),
-        #     block_shape=(BLOCK_M, BLOCK_DMODEL),
-        #     order=(1, 0),
-        # )
 
         workspace_base = ws_ptr + start_pid * 2 * TMA_SIZE
         K_desc_ptr = workspace_base
