@@ -16,6 +16,7 @@ from torch._inductor.runtime.runtime_utils import next_power_of_2
 from torch._inductor.select_algorithm import autotune_select_algorithm, realize_inputs, TritonTemplate
 from torch._inductor.utils import (
     ceildiv as cdiv,
+    get_num_sms,
     get_tma_workspace_arg,
     is_dynamic,
     TMA_DESCRIPTOR_SIZE,
@@ -33,7 +34,7 @@ quantum_attn_ops = torch.ops.quantum_attn
 
 
 def fp8_attention_grid(b, h, s, d, meta):
-    return (cdiv(s, meta["BLOCK_M"]), b * h, 1)
+    return (min(meta["NUM_SMS"], cdiv(s, meta["BLOCK_M"]) * b * h), 1, 1)
 
 
 fp8_attention_forward_template = TritonTemplate(
@@ -398,202 +399,206 @@ def _attn_fwd_inner(
     stride_v_scale_h = {{{{stride("V_scale", 1)}}}}
     stride_v_scale_d = {{{{stride("V_scale", 2)}}}}
 
-    start_m = tl.program_id(0)
-    off_hz = tl.program_id(1)
-    off_z = off_hz // H
-    off_h = off_hz % H
-    # off_z = off_z.to(tl.int64)
-    # off_h = off_h.to(tl.int64)
+    start_pid = tl.program_id(0)
 
-    q_scale_offset = off_z * stride_q_scale_z + off_h * stride_q_scale_h
-    k_scale_offset = off_z * stride_k_scale_z + off_h * stride_k_scale_h
-    v_scale_offset = off_z * stride_v_scale_z + off_h * stride_v_scale_h
+    num_programs_m = (N_CTX_Q + BLOCK_M - 1) // BLOCK_M
+    for pid in range(start_pid, num_programs_m * B * H, NUM_SMS):
+        start_m = pid % num_programs_m
+        off_hz = pid // num_programs_m
+        off_z = off_hz // H
+        off_h = off_hz % H
+        # off_z = off_z.to(tl.int64)
+        # off_h = off_h.to(tl.int64)
 
-    q_offset = off_z * stride_qz + off_h * stride_qh
-    k_offset = off_z * stride_kz + off_h * stride_kh
-    v_offset = off_z * stride_vz + off_h * stride_vh
-    # o_offset = off_z * stride_qz + off_h * stride_qh
+        q_scale_offset = off_z * stride_q_scale_z + off_h * stride_q_scale_h
+        k_scale_offset = off_z * stride_k_scale_z + off_h * stride_k_scale_h
+        v_scale_offset = off_z * stride_v_scale_z + off_h * stride_v_scale_h
 
-    # block pointers
-    Q_block_ptr = tl.make_block_ptr(
-        base=Q + q_offset,
-        shape=(N_CTX_Q, D),
-        strides=(stride_qm, stride_qk),
-        offsets=(start_m * BLOCK_M, 0),
-        block_shape=(BLOCK_M, BLOCK_K),
-        order=(1, 0),
-    )
-    K_block_ptr = tl.make_block_ptr(
-        base=K + k_offset,
-        shape=(D, N_CTX_K),
-        strides=(stride_kk, stride_kn),
-        offsets=(0, 0),
-        block_shape=(BLOCK_K, BLOCK_N),
-        order=(0, 1),
-    )
-    V_block_ptr = tl.make_block_ptr(
-        base=V + v_offset,
-        shape=(N_CTX_K, D),
-        strides=(stride_vk, stride_vn),
-        offsets=(0, 0),
-        block_shape=(BLOCK_N, BLOCK_K),
-        order=(1, 0),
-    )
-    Q_scale_block_ptr = tl.make_block_ptr(
-        base=Q_scale + q_scale_offset,
-        shape=(N_CTX_Q,),
-        strides=(stride_q_scale_m,),
-        offsets=(start_m * BLOCK_M,),
-        block_shape=(BLOCK_M,),
-        order=(0,),
-    )
-    K_scale_block_ptr = tl.make_block_ptr(
-        base=K_scale + k_scale_offset,
-        shape=(N_CTX_K,),
-        strides=(stride_k_scale_m,),
-        offsets=(0,),
-        block_shape=(BLOCK_N,),
-        order=(0,),
-    )
-    V_scale_block_ptr = tl.make_block_ptr(
-        base=V_scale + v_scale_offset,
-        shape=(D,),
-        strides=(stride_v_scale_d,),
-        offsets=(0,),
-        block_shape=(BLOCK_DMODEL,),
-        order=(0,),
-    )
-    # O_block_ptr = tl.make_block_ptr(
-    #     base=Out + o_offset,
-    #     shape=(N_CTX_Q, D),
-    #     strides=(stride_om, stride_on),
-    #     offsets=(start_m * BLOCK_M, 0),
-    #     block_shape=(BLOCK_M, BLOCK_DMODEL),
-    #     order=(1, 0),
-    # )
+        q_offset = off_z * stride_qz + off_h * stride_qh
+        k_offset = off_z * stride_kz + off_h * stride_kh
+        v_offset = off_z * stride_vz + off_h * stride_vh
+        # o_offset = off_z * stride_qz + off_h * stride_qh
 
-    workspace_base = ws_ptr + start_pid * 2 * TMA_SIZE
-    K_desc_ptr = workspace_base
-    V_desc_ptr = workspace_base + TMA_SIZE
+        # block pointers
+        Q_block_ptr = tl.make_block_ptr(
+            base=Q + q_offset,
+            shape=(N_CTX_Q, D),
+            strides=(stride_qm, stride_qk),
+            offsets=(start_m * BLOCK_M, 0),
+            block_shape=(BLOCK_M, BLOCK_K),
+            order=(1, 0),
+        )
+        K_block_ptr = tl.make_block_ptr(
+            base=K + k_offset,
+            shape=(D, N_CTX_K),
+            strides=(stride_kk, stride_kn),
+            offsets=(0, 0),
+            block_shape=(BLOCK_K, BLOCK_N),
+            order=(0, 1),
+        )
+        V_block_ptr = tl.make_block_ptr(
+            base=V + v_offset,
+            shape=(N_CTX_K, D),
+            strides=(stride_vk, stride_vn),
+            offsets=(0, 0),
+            block_shape=(BLOCK_N, BLOCK_K),
+            order=(1, 0),
+        )
+        Q_scale_block_ptr = tl.make_block_ptr(
+            base=Q_scale + q_scale_offset,
+            shape=(N_CTX_Q,),
+            strides=(stride_q_scale_m,),
+            offsets=(start_m * BLOCK_M,),
+            block_shape=(BLOCK_M,),
+            order=(0,),
+        )
+        K_scale_block_ptr = tl.make_block_ptr(
+            base=K_scale + k_scale_offset,
+            shape=(N_CTX_K,),
+            strides=(stride_k_scale_m,),
+            offsets=(0,),
+            block_shape=(BLOCK_N,),
+            order=(0,),
+        )
+        V_scale_block_ptr = tl.make_block_ptr(
+            base=V_scale + v_scale_offset,
+            shape=(D,),
+            strides=(stride_v_scale_d,),
+            offsets=(0,),
+            block_shape=(BLOCK_DMODEL,),
+            order=(0,),
+        )
+        # O_block_ptr = tl.make_block_ptr(
+        #     base=Out + o_offset,
+        #     shape=(N_CTX_Q, D),
+        #     strides=(stride_om, stride_on),
+        #     offsets=(start_m * BLOCK_M, 0),
+        #     block_shape=(BLOCK_M, BLOCK_DMODEL),
+        #     order=(1, 0),
+        # )
 
-    triton.language.extra.cuda.experimental_device_tensormap_create2d(
-        desc_ptr=K_desc_ptr,
-        global_address=K + k_offset,
-        load_size=[BLOCK_N, BLOCK_K],
-        global_size=[N_CTX_K, D],
-        element_ty=K.dtype.element_ty,
-    )
-    triton.language.extra.cuda.experimental_device_tensormap_create2d(
-        desc_ptr=V_desc_ptr,
-        global_address=V + v_offset,
-        load_size=[BLOCK_N, BLOCK_K],
-        global_size=[N_CTX_K, D],
-        element_ty=V.dtype.element_ty,
-    )
+        workspace_base = ws_ptr + start_pid * 2 * TMA_SIZE
+        K_desc_ptr = workspace_base
+        V_desc_ptr = workspace_base + TMA_SIZE
 
-    tl.extra.cuda.experimental_tensormap_fenceproxy_acquire(K_desc_ptr)
-    tl.extra.cuda.experimental_tensormap_fenceproxy_acquire(V_desc_ptr)
+        triton.language.extra.cuda.experimental_device_tensormap_create2d(
+            desc_ptr=K_desc_ptr,
+            global_address=K + k_offset,
+            load_size=[BLOCK_N, BLOCK_K],
+            global_size=[N_CTX_K, D],
+            element_ty=K.dtype.element_ty,
+        )
+        triton.language.extra.cuda.experimental_device_tensormap_create2d(
+            desc_ptr=V_desc_ptr,
+            global_address=V + v_offset,
+            load_size=[BLOCK_N, BLOCK_K],
+            global_size=[N_CTX_K, D],
+            element_ty=V.dtype.element_ty,
+        )
 
-    q_scale = tl.load(Q_scale_block_ptr, boundary_check=(0,)).to(tl.float32)
+        tl.extra.cuda.experimental_tensormap_fenceproxy_acquire(K_desc_ptr)
+        tl.extra.cuda.experimental_tensormap_fenceproxy_acquire(V_desc_ptr)
 
-    if BLOCK_DMODEL == BLOCK_K:
-        q_0 = tl.load(Q_block_ptr, boundary_check=(0,), padding_option="zero")
-    else:
+        q_scale = tl.load(Q_scale_block_ptr, boundary_check=(0,)).to(tl.float32)
+
+        if BLOCK_DMODEL == BLOCK_K:
+            q_0 = tl.load(Q_block_ptr, boundary_check=(0,), padding_option="zero")
+        else:
 {{% for i in range(TILES) %}}
-        q_{{{{i}}}} = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="" if EVEN_K else "zero")
+            q_{{{{i}}}} = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="" if EVEN_K else "zero")
 {{% if i + 1 < TILES %}}
-        Q_block_ptr = tl.advance(Q_block_ptr, (0, BLOCK_K))
+            Q_block_ptr = tl.advance(Q_block_ptr, (0, BLOCK_K))
 {{% endif %}}
 {{% endfor %}}
 
-    # initialize pointer to m and l
+        # initialize pointer to m and l
 {{% for i in range(TILES) %}}
-    acc_{{{{i}}}} = tl.zeros([BLOCK_M, BLOCK_K], dtype=ACC_TYPE)
+        acc_{{{{i}}}} = tl.zeros([BLOCK_M, BLOCK_K], dtype=ACC_TYPE)
 {{% endfor %}}
-    m_i = tl.full([BLOCK_M], -float("inf"), dtype=acc_0.dtype)
-    l_i = tl.full([BLOCK_M], 1.0, dtype=acc_0.dtype)
-    # load scales
-    # stage 1: off-band
-    # For causal = True, STAGE = 3 and _attn_fwd_inner gets 1 as its STAGE
-    # For causal = False, STAGE = 1, and _attn_fwd_inner gets 3 as its STAGE
-    if STAGE & 1:
-        (
+        m_i = tl.full([BLOCK_M], -float("inf"), dtype=acc_0.dtype)
+        l_i = tl.full([BLOCK_M], 1.0, dtype=acc_0.dtype)
+        # load scales
+        # stage 1: off-band
+        # For causal = True, STAGE = 3 and _attn_fwd_inner gets 1 as its STAGE
+        # For causal = False, STAGE = 1, and _attn_fwd_inner gets 3 as its STAGE
+        if STAGE & 1:
+            (
 {{% for i in range(TILES) %}}
-            acc_{{{{i}}}},
+                acc_{{{{i}}}},
 {{% endfor %}}
-            l_i, m_i,
-        ) = _attn_fwd_inner(
+                l_i, m_i,
+            ) = _attn_fwd_inner(
 {{% for i in range(TILES) %}}
-                            acc_{{{{i}}}},
-                            q_{{{{i}}}},
+                                acc_{{{{i}}}},
+                                q_{{{{i}}}},
 {{% endfor %}}
-                            q_scale,
-                            l_i, m_i, K_desc_ptr, V_desc_ptr,
-                            K_scale_block_ptr,
-                            start_m,
-                            BLOCK_M, BLOCK_DMODEL, BLOCK_N, BLOCK_K,
-                            4 - STAGE, N_CTX_Q, N_CTX_K,
-                            TILES,
-                            EVEN_K,
-                            EVEN_N,
-                            )
-    # stage 2: on-band
-    if STAGE & 2:
-        # barrier makes it easier for compielr to schedule the
-        # two loops independently
-        tl.debug_barrier()
-        (
+                                q_scale,
+                                l_i, m_i, K_desc_ptr, V_desc_ptr,
+                                K_scale_block_ptr,
+                                start_m,
+                                BLOCK_M, BLOCK_DMODEL, BLOCK_N, BLOCK_K,
+                                4 - STAGE, N_CTX_Q, N_CTX_K,
+                                TILES,
+                                EVEN_K,
+                                EVEN_N,
+                                )
+        # stage 2: on-band
+        if STAGE & 2:
+            # barrier makes it easier for compielr to schedule the
+            # two loops independently
+            tl.debug_barrier()
+            (
 {{% for i in range(TILES) %}}
-            acc_{{{{i}}}},
+                acc_{{{{i}}}},
 {{% endfor %}}
-            l_i, m_i,
-        ) = _attn_fwd_inner(
+                l_i, m_i,
+            ) = _attn_fwd_inner(
 {{% for i in range(TILES) %}}
-                            acc_{{{{i}}}},
-                            q_{{{{i}}}},
+                                acc_{{{{i}}}},
+                                q_{{{{i}}}},
 {{% endfor %}}
-                            q_scale,
-                            l_i, m_i, K_desc_ptr, V_desc_ptr,
-                            K_scale_block_ptr,
-                            start_m,
-                            BLOCK_M, BLOCK_DMODEL, BLOCK_N, BLOCK_K,
-                            2, N_CTX_Q, N_CTX_K,
-                            TILES,
-                            EVEN_K,
-                            EVEN_N,
-                            )
+                                q_scale,
+                                l_i, m_i, K_desc_ptr, V_desc_ptr,
+                                K_scale_block_ptr,
+                                start_m,
+                                BLOCK_M, BLOCK_DMODEL, BLOCK_N, BLOCK_K,
+                                2, N_CTX_Q, N_CTX_K,
+                                TILES,
+                                EVEN_K,
+                                EVEN_N,
+                                )
 
-    # epilogue
-    offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
-    off_hz = tl.program_id(1)
-    off_z = off_hz // H
-    off_h = off_hz % H
-    # offs_m = offs_m.to(tl.int64)
-    # off_z = off_z.to(tl.int64)
-    # off_h = off_h.to(tl.int64)
+        # epilogue
+        offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+        off_hz = tl.program_id(1)
+        off_z = off_hz // H
+        off_h = off_hz % H
+        # offs_m = offs_m.to(tl.int64)
+        # off_z = off_z.to(tl.int64)
+        # off_h = off_h.to(tl.int64)
 
-    idx_m = offs_m[None, None, :, None]
-    idx_z = tl.full([1, 1, 1, 1], off_z, dtype=idx_m.dtype)
-    idx_h = tl.full([1, 1, 1, 1], off_h, dtype=idx_m.dtype)
+        idx_m = offs_m[None, None, :, None]
+        idx_z = tl.full([1, 1, 1, 1], off_z, dtype=idx_m.dtype)
+        idx_h = tl.full([1, 1, 1, 1], off_h, dtype=idx_m.dtype)
 
 {{% for i in range(TILES) %}}
 
-    acc_{{{{i}}}} = div(acc_{{{{i}}}}, l_i[:, None])
-    v_scale = tl.load(V_scale_block_ptr, boundary_check=(0,)).to(acc_0.dtype)
+        acc_{{{{i}}}} = div(acc_{{{{i}}}}, l_i[:, None])
+        v_scale = tl.load(V_scale_block_ptr, boundary_check=(0,)).to(acc_0.dtype)
 
 {{% if i + 1 < TILES %}}
-    K_scale_block_ptr = tl.advance(K_scale_block_ptr, (BLOCK_K,))
+        K_scale_block_ptr = tl.advance(K_scale_block_ptr, (BLOCK_K,))
 {{% endif %}}
-    acc_{{{{i}}}} = mul(acc_{{{{i}}}}, v_scale[None, :])
+        acc_{{{{i}}}} = mul(acc_{{{{i}}}}, v_scale[None, :])
 
-    acc_{{{{i}}}} = acc_{{{{i}}}}[None, None, :, :]
-    idx_d = tl.arange({{{{i}}}} * BLOCK_K, {{{{i + 1}}}} * BLOCK_K)[None, None, None, :]
-    mask = (idx_z < Z) & (idx_h < H) & (idx_m < N_CTX_Q) & (idx_d < D)
-    acc = acc_{{{{i}}}}
+        acc_{{{{i}}}} = acc_{{{{i}}}}[None, None, :, :]
+        idx_d = tl.arange({{{{i}}}} * BLOCK_K, {{{{i + 1}}}} * BLOCK_K)[None, None, None, :]
+        mask = (idx_z < Z) & (idx_h < H) & (idx_m < N_CTX_Q) & (idx_d < D)
+        acc = acc_{{{{i}}}}
 {{% if i == 0 %}}
-    {{{{store_output(("idx_z", "idx_h", "idx_m", "idx_d"), "acc", "mask")}}}}
+        {{{{store_output(("idx_z", "idx_h", "idx_m", "idx_d"), "acc", "mask", indent_width=8)}}}}
 {{% else %}}
-    <STORE_OUTPUT>
+        <STORE_OUTPUT>
 {{% endif %}}
 {{% endfor %}}
 """,
@@ -805,6 +810,7 @@ def generate_fp8_attention_template_choices(
             FAST_SOFTMAX=fast_softmax,
             USE_FP16_COMPUTE=scale_q.get_dtype() == torch.float16 and config.triton.allow_reduced_precision_compute,
             TMA_SIZE=TMA_DESCRIPTOR_SIZE,
+            NUM_SMS=get_num_sms(),
             **mm_options_,
         )
 
