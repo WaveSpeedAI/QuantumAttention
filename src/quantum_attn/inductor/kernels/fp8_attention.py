@@ -224,7 +224,7 @@ def _attn_fwd_inner(
 {{% endfor %}}
                     q_scale,
                     l_i, m_i,
-                    K_desc_ptr, V_desc_ptr,
+                    K_desc, V_desc,
                     K_scale_block_ptr,
                     start_m, #
                     BLOCK_M: tl.constexpr, BLOCK_DMODEL: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
@@ -271,16 +271,11 @@ def _attn_fwd_inner(
 
         # -- compute qk ----
         if BLOCK_DMODEL == BLOCK_K:
-            k = tl._experimental_descriptor_load(
-                K_desc_ptr, (start_n, 0), (BLOCK_N, BLOCK_K), q_0.dtype
-            )
-            k = tl.trans(k)
+            k = K_desc.load((start_n, 0))
             qk = tl.dot(q_0, k, out_dtype=tl.float32)
         else:
 {{% for i in range(TILES) %}}
-            k = tl._experimental_descriptor_load(
-                K_desc_ptr, (start_n, BLOCK_K * {{{{i}}}}), (BLOCK_N, BLOCK_K), q_0.dtype
-            )
+            k = K_desc.load((start_n, BLOCK_K * {{{{i}}}}))
             k = tl.trans(k)
 {{% if i == 0 %}}
             qk = tl.dot(q_{{{{i}}}}, k, out_dtype=tl.float32)
@@ -290,9 +285,7 @@ def _attn_fwd_inner(
 {{% endfor %}}
 
 {{% for i in range(TILES) %}}
-        v_{{{{i}}}} = tl._experimental_descriptor_load(
-            V_desc_ptr, (start_n, BLOCK_K * {{{{i}}}}), (BLOCK_N, BLOCK_K), q_0.dtype
-        )
+        v_{{{{i}}}} = V_desc.load((start_n, BLOCK_K * {{{{i}}}}))
 {{% endfor %}}
 
 {{% if NUM_STAGES > 1 %}}
@@ -457,23 +450,18 @@ def _attn_fwd_inner(
         K_desc_ptr = workspace_base
         V_desc_ptr = workspace_base + TMA_SIZE
 
-        triton.language.extra.cuda.experimental_device_tensormap_create2d(
-            desc_ptr=K_desc_ptr,
-            global_address=K + k_offset,
-            load_size=[BLOCK_N, BLOCK_K],
-            global_size=[N_CTX_K, D],
-            element_ty=K.dtype.element_ty,
+        K_desc = tl._experimental_make_tensor_descriptor(
+            K + k_offset,
+            shape=[D, N_CTX_K],
+            strides=[stride_kk, stride_kn],
+            block_shape=[BLOCK_K, BLOCK_N],
         )
-        triton.language.extra.cuda.experimental_device_tensormap_create2d(
-            desc_ptr=V_desc_ptr,
-            global_address=V + v_offset,
-            load_size=[BLOCK_N, BLOCK_K],
-            global_size=[N_CTX_K, D],
-            element_ty=V.dtype.element_ty,
+        V_desc = tl._experimental_make_tensor_descriptor(
+            V + v_offset,
+            shape=[N_CTX_K, D],
+            strides=[stride_vk, stride_vn],
+            block_shape=[BLOCK_N, BLOCK_K],
         )
-
-        tl.extra.cuda.experimental_tensormap_fenceproxy_acquire(K_desc_ptr)
-        tl.extra.cuda.experimental_tensormap_fenceproxy_acquire(V_desc_ptr)
 
         q_scale = tl.load(Q_scale_block_ptr, boundary_check=(0,)).to(tl.float32)
 
@@ -509,7 +497,7 @@ def _attn_fwd_inner(
                                 q_{{{{i}}}},
 {{% endfor %}}
                                 q_scale,
-                                l_i, m_i, K_desc_ptr, V_desc_ptr,
+                                l_i, m_i, K_desc, V_desc,
                                 K_scale_block_ptr,
                                 start_m,
                                 BLOCK_M, BLOCK_DMODEL, BLOCK_N, BLOCK_K,
@@ -534,7 +522,7 @@ def _attn_fwd_inner(
                                 q_{{{{i}}}},
 {{% endfor %}}
                                 q_scale,
-                                l_i, m_i, K_desc_ptr, V_desc_ptr,
+                                l_i, m_i, K_desc, V_desc,
                                 K_scale_block_ptr,
                                 start_m,
                                 BLOCK_M, BLOCK_DMODEL, BLOCK_N, BLOCK_K,
