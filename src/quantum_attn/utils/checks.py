@@ -35,9 +35,12 @@ def has_triton_language(attr):
 
 
 def has_triton_tma_support():
-    return has_triton_language("_experimental_descriptor_load") and has_triton_language(
-        "_experimental_make_tensor_descriptor"
-    )
+    if not has_triton_language("_experimental_descriptor_load"):
+        return False
+
+    import triton.language as tl
+
+    return hasattr(tl.extra.cuda, "experimental_tensormap_fenceproxy_acquire")
 
 
 def is_nvidia_cuda():
