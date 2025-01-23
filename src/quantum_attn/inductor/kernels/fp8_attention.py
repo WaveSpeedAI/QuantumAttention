@@ -761,7 +761,6 @@ def generate_fp8_attention_template_choices(
         H,
         N_CTX_Q,
         N_CTX_K,
-        is_dropout=dropout_p > 0.0,
         is_causal=is_causal,
         layout=layout2,
         optimize_block_size=not dynamic or enable_max_autotune,
