@@ -274,18 +274,16 @@ def _attn_fwd_inner(
             k = tl._experimental_descriptor_load(
                 K_desc_ptr, (start_n, 0), (BLOCK_N, BLOCK_K), q_0.dtype
             )
-            k = tl.trans(k)
-            qk = tl.dot(q_0, k, out_dtype=tl.float32)
+            qk = tl.dot(q_0, k.T, out_dtype=tl.float32)
         else:
 {{% for i in range(TILES) %}}
             k = tl._experimental_descriptor_load(
                 K_desc_ptr, (start_n, BLOCK_K * {{{{i}}}}), (BLOCK_N, BLOCK_K), q_0.dtype
             )
-            k = tl.trans(k)
 {{% if i == 0 %}}
-            qk = tl.dot(q_{{{{i}}}}, k, out_dtype=tl.float32)
+            qk = tl.dot(q_{{{{i}}}}, k.T, out_dtype=tl.float32)
 {{% else %}}
-            qk += tl.dot(q_{{{{i}}}}, k, out_dtype=tl.float32)
+            qk += tl.dot(q_{{{{i}}}}, k.T, out_dtype=tl.float32)
 {{% endif %}}
 {{% endfor %}}
 
