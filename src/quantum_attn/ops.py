@@ -75,14 +75,14 @@ def _(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
+    scale_q: torch.Tensor,
+    scale_k: torch.Tensor,
+    scale_v: torch.Tensor,
     attn_mask: Optional[torch.Tensor] = None,
     dropout_p: float = 0.0,
     is_causal: bool = False,
     *,
     scale: Optional[float] = None,
-    scale_q: torch.Tensor,
-    scale_k: torch.Tensor,
-    scale_v: torch.Tensor,
     out: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     return _fp8_attention_forward(

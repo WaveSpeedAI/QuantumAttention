@@ -165,7 +165,6 @@ def fp8_attention_forward(
         raise RuntimeError("fp8_attention_forward requires inductor support")
 
     # Dynamo is expecting a callable with "__code__" attribute.
-    # We cannot directly pass hop to it. So we wrap it in a dummy function.
     def _fp8_attention_wrapper(*args, **kwargs):
         return quantum_attn_ops.fp8_attention_forward(*args, **kwargs)
 
