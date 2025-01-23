@@ -700,9 +700,9 @@ def early_fp8_attention_config_prune(configs, query, key, value, scale_q, scale_
 
     filtered_configs = []
     for c in configs:
-        kw = config.kwargs
+        kw = c.kwargs
         BLOCK_M, BLOCK_N, BLOCK_K = kw["BLOCK_M"], kw["BLOCK_N"], kw["BLOCK_K"]
-        num_stages = config.num_stages
+        num_stages = c.num_stages
         required_shared_memory = (
             BLOCK_N * num_stages * (key_dtype.itemsize + value_dtype.itemsize) + BLOCK_M * query_dtype.itemsize
         ) * BLOCK_K
