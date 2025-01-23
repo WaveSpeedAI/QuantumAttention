@@ -3,15 +3,15 @@ import math
 import sympy
 
 import torch
+
+if True:
+    # Put this first to avoid circular import
+    # ImportError: cannot import name 'CppGemmTemplate' from partially initialized module 'torch._inductor.codegen.cpp_gemm_template' (most likely due to a circular import)
+    from torch._inductor.lowering import register_lowering
+
 from torch._inductor import config as inductor_config, ir
 from torch._inductor.codegen.triton import TritonOverrides
-
-# Put this after the import of torch._inductor.lowering to avoid circular import
-# ImportError: cannot import name 'CppGemmTemplate' from partially initialized module 'torch._inductor.codegen.cpp_gemm_template' (most likely due to a circular import)
 from torch._inductor.kernel.mm_common import mm_args
-
-from torch._inductor.lowering import register_lowering
-
 from torch._inductor.runtime.runtime_utils import next_power_of_2
 from torch._inductor.select_algorithm import autotune_select_algorithm, realize_inputs, TritonTemplate
 from torch._inductor.utils import ceildiv as cdiv, is_dynamic, use_max_autotune
