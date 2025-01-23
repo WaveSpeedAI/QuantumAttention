@@ -334,7 +334,7 @@ def _attn_fwd_inner(
 {{% else %}}
 
         m_i_m_ij = sub(m_i, m_ij)
-        alpha = exp2(m_i_m_ij)
+        alpha = ex2(m_i_m_ij)
 
 {{% for i in range(TILES) %}}
         acc_{{{{i}}}} = mul(acc_{{{{i}}}}, alpha[:, None])
