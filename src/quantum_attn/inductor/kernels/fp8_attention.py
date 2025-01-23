@@ -14,7 +14,13 @@ from torch._inductor.codegen.triton import TritonOverrides
 from torch._inductor.kernel.mm_common import mm_args
 from torch._inductor.runtime.runtime_utils import next_power_of_2
 from torch._inductor.select_algorithm import autotune_select_algorithm, realize_inputs, TritonTemplate
-from torch._inductor.utils import ceildiv as cdiv, is_dynamic, use_max_autotune
+from torch._inductor.utils import (
+    ceildiv as cdiv,
+    get_tma_workspace_arg,
+    is_dynamic,
+    TMA_DESCRIPTOR_SIZE,
+    use_max_autotune,
+)
 from torch._inductor.virtualized import V
 
 from quantum_attn import config
@@ -787,6 +793,10 @@ def generate_fp8_attention_template_choices(
             choices,
             input_nodes=args,
             layout=layout2,
+            workspace_arg=get_tma_workspace_arg(
+                num_tma_descriptors=2,
+                device=query.get_device(),
+            ),
             SM_SCALE=scale,
             STAGE=stage,
             TILES=cdiv(Lq, mm_options_["BLOCK_K"]),
@@ -794,6 +804,7 @@ def generate_fp8_attention_template_choices(
             NUM_STAGES=fa_config.num_stages,
             FAST_SOFTMAX=fast_softmax,
             USE_FP16_COMPUTE=scale_q.get_dtype() == torch.float16 and config.triton.allow_reduced_precision_compute,
+            TMA_SIZE=TMA_DESCRIPTOR_SIZE,
             **mm_options_,
         )
 
