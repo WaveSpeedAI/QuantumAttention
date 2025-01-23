@@ -428,22 +428,6 @@ def _attn_fwd_inner(
             block_shape=(BLOCK_M, BLOCK_K),
             order=(1, 0),
         )
-        K_block_ptr = tl.make_block_ptr(
-            base=K + k_offset,
-            shape=(D, N_CTX_K),
-            strides=(stride_kk, stride_kn),
-            offsets=(0, 0),
-            block_shape=(BLOCK_K, BLOCK_N),
-            order=(0, 1),
-        )
-        V_block_ptr = tl.make_block_ptr(
-            base=V + v_offset,
-            shape=(N_CTX_K, D),
-            strides=(stride_vk, stride_vn),
-            offsets=(0, 0),
-            block_shape=(BLOCK_N, BLOCK_K),
-            order=(1, 0),
-        )
         Q_scale_block_ptr = tl.make_block_ptr(
             base=Q_scale + q_scale_offset,
             shape=(N_CTX_Q,),
@@ -465,7 +449,7 @@ def _attn_fwd_inner(
             shape=(D,),
             strides=(stride_v_scale_d,),
             offsets=(0,),
-            block_shape=(BLOCK_DMODEL,),
+            block_shape=(BLOCK_K,),
             order=(0,),
         )
         # O_block_ptr = tl.make_block_ptr(
