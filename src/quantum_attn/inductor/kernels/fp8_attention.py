@@ -31,7 +31,7 @@ def fp8_attention_grid(b, h, s, d, meta):
 
 
 fp8_attention_forward_template = TritonTemplate(
-    name="quantum_attn::fp8_attention_forward",
+    name="quantum_attn_fp8_attention_forward",
     grid=fp8_attention_grid,
     source=rf"""
 import triton
