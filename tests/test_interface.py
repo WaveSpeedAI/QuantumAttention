@@ -17,7 +17,8 @@ if not torch.cuda.is_available():
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("device", ["cuda"])
 @pytest.mark.parametrize("is_causal", [False, True])
-@pytest.mark.parametrize("force_eager_fallback", [True])
+@pytest.mark.parametrize("force_eager_fallback", [True, False])
+@torch.no_grad()
 def test_dynamic_fp8_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, force_eager_fallback):
     torch.manual_seed(0)
     query = torch.randn(B, H, S_Q, D, dtype=dtype, device=device)

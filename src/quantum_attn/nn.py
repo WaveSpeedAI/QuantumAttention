@@ -62,6 +62,47 @@ def _validate_sdpa_input(
             f"{query.dim()}, key.dim: {key.dim()} and value.dim: {value.dim()} instead."
         )
 
+    if query.dtype not in (torch.float16, torch.bfloat16, torch.float8_e4m3fn):
+        raise ValueError(
+            f"Expected query, key, and value to have dtype torch.float16, torch.bfloat16, or torch.float8_e4m3fn, "
+            f"but got query.dtype: {query.dtype} instead."
+        )
+
+    if query.device.type != "cuda":
+        raise ValueError("Expected query, key, and value to be on a CUDA device")
+
+
+def can_use_fp8_attention_forward(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: Optional[torch.Tensor] = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    *,
+    scale: Optional[float] = None,
+) -> Tuple[bool, str]:
+    if attn_mask is not None:
+        return False, "NYI: attn_mask must be None"
+    if dropout_p != 0.0:
+        return False, "NYI: dropout_p must be 0.0"
+
+    try:
+        _validate_sdpa_input(query, key, value, attn_mask, dropout_p, is_causal, scale)
+    except ValueError as e:
+        return False, str(e)
+
+    if query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
+        return False, "NYI: query, key, and value must be 4D tensors"
+    if query.size(-3) != key.size(-3):
+        return False, (
+            f"Expect query and key/value to have the same number of heads "
+            f"but got Hq={query.size(-3)} and Hkv={key.size(-3)}. "
+            f"Try setting enable_gqa=True for GQA."
+        )
+
+    return True, ""
+
 
 def fp8_attention_forward(
     query: torch.Tensor,
@@ -76,18 +117,12 @@ def fp8_attention_forward(
     scale_k: torch.Tensor,
     scale_v: torch.Tensor,
 ) -> Tensor:
-    # Some basic input validation
-    _validate_sdpa_input(query, key, value)
-    if query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
-        raise NotImplementedError("NYI: query, key, and value must be 4D tensors")
-    if scale_q.dim() != 3 or scale_k.dim() != 3 or scale_v.dim() != 3:
-        raise NotImplementedError("NYI: scale_q, scale_k, and scale_v must be 3D tensors")
-    if query.size(-3) != key.size(-3):
-        raise ValueError(
-            f"Expect query and key/value to have the same number of heads "
-            f"but got Hq={query.size(-3)} and Hkv={key.size(-3)}. "
-            f"Try setting enable_gqa=True for GQA."
-        )
+    supported, reason = can_use_fp8_attention_forward(
+        query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
+    )
+    if not supported:
+        raise ValueError(reason)
+
     if scale is None:
         scale = 1.0 / math.sqrt(query.size(-1))
 
