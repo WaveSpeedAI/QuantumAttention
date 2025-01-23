@@ -17,6 +17,8 @@ from torch._inductor.select_algorithm import autotune_select_algorithm, realize_
 from torch._inductor.utils import ceildiv as cdiv, is_dynamic, use_max_autotune
 from torch._inductor.virtualized import V
 
+from quantum_attn import config
+
 from quantum_attn.utils import checks
 
 from .mm_common import get_device_shared_memory, mm_options, reduce_block_size_for_cuda
@@ -697,7 +699,7 @@ def early_fp8_attention_config_prune(configs, query, key, value, scale_q, scale_
     max_shared_memory = get_device_shared_memory(device.index)
 
     filtered_configs = []
-    for config in configs:
+    for c in configs:
         kw = config.kwargs
         BLOCK_M, BLOCK_N, BLOCK_K = kw["BLOCK_M"], kw["BLOCK_N"], kw["BLOCK_K"]
         num_stages = config.num_stages
@@ -706,7 +708,7 @@ def early_fp8_attention_config_prune(configs, query, key, value, scale_q, scale_
         ) * BLOCK_K
         required_shared_memory += BLOCK_N * num_stages * scale_k_dtype.itemsize + BLOCK_M * scale_q_dtype.itemsize
         if required_shared_memory <= max_shared_memory:
-            filtered_configs.append(config)
+            filtered_configs.append(c)
     return filtered_configs
 
 
@@ -790,6 +792,7 @@ def generate_fp8_attention_template_choices(
             EVEN_N=even_n_symbolic,
             NUM_STAGES=fa_config.num_stages,
             FAST_SOFTMAX=fast_softmax,
+            USE_FP16_COMPUTE=scale_q.get_dtype() == torch.float16 and config.triton.allow_reduced_precision_compute,
             **mm_options_,
         )
 
