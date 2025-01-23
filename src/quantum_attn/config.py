@@ -8,17 +8,20 @@ _save_config_ignore = {
 }
 
 
+use_fast_accum = os.getenv("QUANTUM_ATTN_USE_FAST_ACCUM", "1") == "1"
+
+
 class dynamo:
     dynamic = os.getenv("QUANTUM_ATTN_DYNAMIC") == "1"
 
 
-class attention:
-    use_fast_accum = os.getenv("QUANTUM_ATTN_USE_FAST_ACCUM", "1") == "1"
+class triton:
+    enable_fast_math = os.getenv("QUANTUM_ATTN_ENABLE_FAST_MATH") == "1"
 
     allow_reduced_precision_compute = os.getenv("PARA_ATTN_ALLOW_REDUCED_PRECISION_COMPUTE", "1") == "1"
 
-    fast_math = os.getenv("QUANTUM_ATTN_FAST_MATH", "1") == "1"
 
+class attention:
     force_eager_fallback = os.getenv("QUANTUM_ATTN_FORCE_EAGER_FALLBACK") == "1"
 
 

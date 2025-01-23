@@ -1,5 +1,5 @@
 import math
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import torch
 from torch import Tensor
@@ -7,6 +7,7 @@ from torch._higher_order_ops.utils import _set_compilation_env
 from torch.fx.experimental.proxy_tensor import _temp_remove_pre_dispatch_torch_function_mode
 
 from quantum_attn import config
+from quantum_attn.utils import checks
 
 quantum_attn_ops = torch.ops.quantum_attn
 
@@ -72,6 +73,14 @@ def _validate_sdpa_input(
         raise ValueError("Expected query, key, and value to be on a CUDA device")
 
 
+_SUPPORTED_HEAD_DIMS = [64, 128, 256]
+
+
+def _supported_head_dim(n: Union[int, torch.SymInt]) -> bool:
+    """Returns true if the head dim is supported by FlexAttention"""
+    return n in _SUPPORTED_HEAD_DIMS
+
+
 def can_use_fp8_attention_forward(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -82,6 +91,12 @@ def can_use_fp8_attention_forward(
     *,
     scale: Optional[float] = None,
 ) -> Tuple[bool, str]:
+    if not checks.cuda_capability_compare("ge", 9, 0, device=query.device):
+        return False, "Minimum CUDA capability of 9.0 is required"
+
+    if not checks.has_triton_tma_support():
+        return False, "Triton TMA support is required"
+
     if attn_mask is not None:
         return False, "NYI: attn_mask must be None"
     if dropout_p != 0.0:
@@ -100,6 +115,15 @@ def can_use_fp8_attention_forward(
             f"but got Hq={query.size(-3)} and Hkv={key.size(-3)}. "
             f"Try setting enable_gqa=True for GQA."
         )
+
+    if not (_supported_head_dim(query.size(-1)) and _supported_head_dim(value.size(-1))):
+        raise ValueError(
+            f"NYI: Currently non power of 2 embedding dimension are not supported. "
+            f"Got E={query.size(-1)} and Ev={value.size(-1)}."
+        )
+
+    if value.size(-1) != query.size(-1):
+        return False, "NYI: query and value must have the same embedding dimension"
 
     return True, ""
 
