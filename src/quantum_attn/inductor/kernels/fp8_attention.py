@@ -402,7 +402,7 @@ def _attn_fwd_inner(
     start_pid = tl.program_id(0)
 
     num_programs_m = (N_CTX_Q + BLOCK_M - 1) // BLOCK_M
-    for pid in range(start_pid, num_programs_m * B * H, NUM_SMS):
+    for pid in range(start_pid, num_programs_m * Z * H, NUM_SMS):
         start_m = pid % num_programs_m
         off_hz = pid // num_programs_m
         off_z = off_hz // H
