@@ -142,7 +142,6 @@ def fp8_attention_forward(
     scale: Optional[float] = None,
     scale_q: torch.Tensor,
     scale_k: torch.Tensor,
-    scale_v: torch.Tensor,
 ) -> Tensor:
     supported, reason = can_use_fp8_attention_forward(
         query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
@@ -164,7 +163,6 @@ def fp8_attention_forward(
             value,
             scale_q,
             scale_k,
-            scale_v,
             attn_mask=attn_mask,
             dropout_p=dropout_p,
             is_causal=is_causal,
@@ -179,7 +177,6 @@ def fp8_attention_forward(
             value,
             scale_q,
             scale_k,
-            scale_v,
             attn_mask=attn_mask,
             dropout_p=dropout_p,
             is_causal=is_causal,
@@ -206,7 +203,6 @@ def fp8_attention_forward(
                     value,
                     scale_q,
                     scale_k,
-                    scale_v,
                     attn_mask=attn_mask,
                     dropout_p=dropout_p,
                     is_causal=is_causal,
