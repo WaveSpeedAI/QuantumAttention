@@ -97,7 +97,7 @@ def test_benchmark_fp8_attn_func(D, dtype, device, is_causal):
         import triton.profiler.viewer as proton_viewer
 
         metrics = ["time/ms"]
-        metrics = ["TOP/s"] + metrics
+        metrics = ["tflop/s"] + metrics
         file_name = f"{profile_name}.hatchet"
         proton_viewer.parse(metrics, file_name, depth=100)
 
