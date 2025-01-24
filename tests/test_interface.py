@@ -51,10 +51,10 @@ def test_fp8_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, force_eager
     assert rmse < 1e-2, f"RMSE: {rmse}"
 
 
-@pytest.mark.parametrize("D", [128])
-@pytest.mark.parametrize("dtype", [torch.float16])
+@pytest.mark.parametrize("D", [64, 128, 256])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("device", ["cuda"])
-@pytest.mark.parametrize("is_causal", [False])
+@pytest.mark.parametrize("is_causal", [False, True])
 @torch.no_grad()
 def test_benchmark_fp8_attn_func(D, dtype, device, is_causal):
     import triton
