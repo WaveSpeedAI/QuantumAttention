@@ -294,7 +294,7 @@ def _attn_fwd_inner(
 {{% endfor %}}
 
 {{% if NUM_STAGES > 1 %}}
-        # tl.debug_barrier()
+        tl.debug_barrier()
 {{% endif %}}
 
         qk = qk * (q_scale[:, None] * k_scale[None, :])
