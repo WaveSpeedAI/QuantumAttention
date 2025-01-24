@@ -243,15 +243,6 @@ def _attn_fwd_inner(
                     TILES: tl.constexpr,
                     EVEN_N: tl.constexpr,
 ):
-    qk_scale: tl.constexpr = tl.full(
-        [1], {{{{SM_SCALE * 1.44269504}}}},
-{{% if USE_FP16_COMPUTE %}}
-        dtype=tl.float16,
-{{% else %}}
-        dtype=tl.float32,
-{{% endif %}}
-    )
-
     # range of values handled by this stage
     if STAGE == 1:
         if BLOCK_N <= BLOCK_M:
@@ -307,17 +298,13 @@ def _attn_fwd_inner(
                 offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
                 offs_n = tl.arange(0, BLOCK_N)
                 mask = offs_m[:, None] >= (start_n + offs_n[None, :])
-                qk = mul(qk, qk_scale)
                 qk = tl.where(mask, qk, tl.full([1], -float("inf"), dtype=qk.dtype))
-            else:
-                qk = mul(qk, qk_scale)
         else:
             offs_n = tl.arange(0, BLOCK_N)
             mask = (start_n + offs_n[None, :]) < N_CTX_K
             if STAGE == 2:
                 offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
                 mask = mask & (offs_m[:, None] >= (start_n + offs_n[None, :]))
-            qk = mul(qk, qk_scale)
             qk = tl.where(mask, qk, tl.full([1], -float("inf"), dtype=qk.dtype))
         m_ij = maximum_(m_i, tl.reduce(qk, 1, maximum))
         qk = sub(qk, m_ij[:, None])
@@ -460,6 +447,7 @@ def _attn_fwd_inner(
             tl.extra.cuda.experimental_tensormap_fenceproxy_acquire(V_desc_ptr)
 
         q_scale = tl.load(Q_scale_block_ptr, boundary_check=(0,)).to(tl.float32)
+        q_scale = q_scale * ({{{{SM_SCALE * 1.44269504}}}})
 
 {{% for i in range(TILES) %}}
         q_{{{{i}}}} = tl.load(Q_block_ptr, boundary_check=(0,))
