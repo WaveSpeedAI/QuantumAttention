@@ -70,17 +70,17 @@ def test_benchmark_fp8_attn_func(D, dtype, device, is_causal):
     key = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
     value = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
 
-    def torch_sdpa(query, key, value):
-        return F.scaled_dot_product_attention(query, key, value)
+    def torch_sdpa(query, key, value, is_causal=is_causal):
+        return F.scaled_dot_product_attention(query, key, value, is_causal=is_causal)
 
-    def fp8_attention(query, key, value):
-        return quantum_attn_interface.fp8_attn_func(query, key, value)
+    def fp8_attention(query, key, value, is_causal=is_causal):
+        return quantum_attn_interface.fp8_attn_func(query, key, value, is_causal=is_causal)
 
     def torch_sdpa_fn():
-        torch_sdpa(query, key, value)
+        torch_sdpa(query, key, value, is_causal)
 
     def fp8_attention_fn():
-        fp8_attention(query, key, value)
+        fp8_attention(query, key, value, is_causal)
 
     ms_sdpa = triton.testing.do_bench(torch_sdpa_fn)
     ms_fp8_attention = triton.testing.do_bench(fp8_attention_fn)
@@ -120,11 +120,11 @@ def test_benchmark_fp8_attn_func_with_proton(D, dtype, device, is_causal):
             for _ in range(reps):
                 fn(*args)
 
-    def torch_sdpa(query, key, value):
-        return F.scaled_dot_product_attention(query, key, value)
+    def torch_sdpa(query, key, value, is_causal=is_causal):
+        return F.scaled_dot_product_attention(query, key, value, is_causal=is_causal)
 
-    def fp8_attention(query, key, value):
-        return quantum_attn_interface.fp8_attn_func(query, key, value)
+    def fp8_attention(query, key, value, is_causal=is_causal):
+        return quantum_attn_interface.fp8_attn_func(query, key, value, is_causal=is_causal)
 
     def bench(reps=1000, warmup_reps=10000):
         B = 2
@@ -136,8 +136,8 @@ def test_benchmark_fp8_attn_func_with_proton(D, dtype, device, is_causal):
         key = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
         value = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
 
-        bench_fn(reps, warmup_reps, torch_sdpa, query, key, value)
-        bench_fn(reps, warmup_reps, fp8_attention, query, key, value)
+        bench_fn(reps, warmup_reps, torch_sdpa, query, key, value, is_causal)
+        bench_fn(reps, warmup_reps, fp8_attention, query, key, value, is_causal)
 
     def show_profile(profile_name):
         import triton.profiler.viewer as proton_viewer
