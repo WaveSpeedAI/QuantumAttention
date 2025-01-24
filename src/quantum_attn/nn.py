@@ -165,7 +165,7 @@ def _fp8_attention_wrapper(
         query, scale_q = dynamically_quantize_fp8(query, reduction_dim=-1)
         key, scale_k = dynamically_quantize_fp8(key, reduction_dim=-1)
 
-    return fp8_attention_forward(
+    return quantum_attn_ops.fp8_attention_forward(
         query,
         key,
         value,
