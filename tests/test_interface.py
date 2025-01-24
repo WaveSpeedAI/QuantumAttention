@@ -37,7 +37,7 @@ def test_dynamic_fp8_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, for
             "attention.force_eager_fallback": force_eager_fallback,
         }
     ):
-        qattn_out = quantum_attn_interface.dynamic_fp8_attn_func(
+        qattn_out = quantum_attn_interface.fp8_attn_func(
             query,
             key,
             value,

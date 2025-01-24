@@ -13,7 +13,7 @@ from torch._inductor import config as inductor_config, ir
 from torch._inductor.codegen.triton import TritonOverrides
 from torch._inductor.kernel.mm_common import mm_args
 from torch._inductor.runtime.runtime_utils import next_power_of_2
-from torch._inductor.select_algorithm import autotune_select_algorithm, realize_inputs, TritonTemplate
+from torch._inductor.select_algorithm import autotune_select_algorithm, TritonTemplate
 from torch._inductor.utils import (
     ceildiv as cdiv,
     get_num_sms,
@@ -28,7 +28,7 @@ from quantum_attn import config
 
 from quantum_attn.utils import checks
 
-from .mm_common import acc_type, get_device_shared_memory, mm_options, reduce_block_size_for_cuda
+from .mm_common import acc_type, get_device_shared_memory, mm_options, reduce_block_size_for_cuda, require_dense_memory
 
 quantum_attn_ops = torch.ops.quantum_attn
 
@@ -440,23 +440,24 @@ def _attn_fwd_inner(
             order=(0,),
         )
 
-        triton.language.extra.cuda.experimental_device_tensormap_create2d(
-            desc_ptr=K_desc_ptr,
-            global_address=K + k_offset,
-            load_size=[BLOCK_N, BLOCK_K],
-            global_size=[N_CTX_K, D],
-            element_ty=K.dtype.element_ty,
-        )
-        triton.language.extra.cuda.experimental_device_tensormap_create2d(
-            desc_ptr=V_desc_ptr,
-            global_address=V + v_offset,
-            load_size=[BLOCK_N, BLOCK_K],
-            global_size=[N_CTX_K, D],
-            element_ty=V.dtype.element_ty,
-        )
+        if start_m < NUM_SMS:
+            triton.language.extra.cuda.experimental_device_tensormap_create2d(
+                desc_ptr=K_desc_ptr,
+                global_address=K + k_offset,
+                load_size=[BLOCK_N, BLOCK_K],
+                global_size=[N_CTX_K, D],
+                element_ty=K.dtype.element_ty,
+            )
+            triton.language.extra.cuda.experimental_device_tensormap_create2d(
+                desc_ptr=V_desc_ptr,
+                global_address=V + v_offset,
+                load_size=[BLOCK_N, BLOCK_K],
+                global_size=[N_CTX_K, D],
+                element_ty=V.dtype.element_ty,
+            )
 
-        tl.extra.cuda.experimental_tensormap_fenceproxy_acquire(K_desc_ptr)
-        tl.extra.cuda.experimental_tensormap_fenceproxy_acquire(V_desc_ptr)
+            tl.extra.cuda.experimental_tensormap_fenceproxy_acquire(K_desc_ptr)
+            tl.extra.cuda.experimental_tensormap_fenceproxy_acquire(V_desc_ptr)
 
         q_scale = tl.load(Q_scale_block_ptr, boundary_check=(0,)).to(tl.float32)
 
@@ -777,8 +778,10 @@ def tuned_fp8_attention(
     scale=None,
     layout=None,
 ):
-    query, key, value = realize_inputs(query, key, value)
-    scale_q, scale_k = realize_inputs(scale_q, scale_k)
+    query, key, value = (ir.ExternKernel.realize_input(x) for x in (query, key, value))
+    query = require_dense_memory(query, num_dims=1)
+    key, value = (require_dense_memory(x, num_dims=2) for x in (key, value))
+    scale_q, scale_k = require_dense_memory(scale_q, scale_k, num_dims=1)
     for x in (query, key, value, scale_q, scale_k, attn_mask):
         if x is not None:
             x.freeze_layout()

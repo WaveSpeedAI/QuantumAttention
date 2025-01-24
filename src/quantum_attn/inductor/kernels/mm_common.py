@@ -2,11 +2,35 @@ import functools
 import unittest
 
 import torch
+from torch._inductor import ir
 from torch._inductor.kernel import mm_common
 from torch._inductor.utils import ceildiv as cdiv
+from torch._inductor.virtualized import V
 
 from quantum_attn import config
 from quantum_attn.utils import checks
+
+
+def require_dense_memory(x, num_dims=None):
+    strides = x.get_stride()
+    try:
+        strides_hint = [V.graph.sizevars.size_hint(s) for s in strides]
+        stride_order = ir.get_stride_order(strides_hint)
+    except Exception:
+        # logger.warning(f"Failed to get size hint for strides: {strides}", exc_info=True)
+        stride_order = list(reversed(range(len(x.get_size()))))
+    required_strides = ir.FlexibleLayout.stride_ordered(x.get_size(), stride_order)
+    if isinstance(x.layout, ir.FlexibleLayout):
+        x.freeze_layout_with_same_order(required_strides)
+    else:
+        for i, (size, stride, required_stride) in enumerate(zip(x.layout.size, x.layout.stride, required_strides)):
+            if num_dims is not None and i + num_dims < len(x.layout.size):
+                continue
+            if stride != required_stride and size != 1:
+                x = ir.ExternKernel.copy_input(x)
+                x.freeze_layout_with_same_order(required_strides)
+                break
+    return x
 
 
 def acc_type(dtype):

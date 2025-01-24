@@ -7,13 +7,12 @@ except ImportError:
 import torch
 
 from . import config, nn, ops
-from .quantum_attn_interface import dynamic_fp8_attn_func, dynamically_quantize_fp8, fp8_attn_func
+from .quantum_attn_interface import dynamically_quantize_fp8, fp8_attn_func
 
 if torch._dynamo.is_inductor_supported():
     from . import inductor
 
 __all__ = [
     "fp8_attn_func",
-    "dynamic_fp8_attn_func",
     "dynamically_quantize_fp8",
 ]

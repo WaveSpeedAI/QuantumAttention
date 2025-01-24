@@ -51,9 +51,10 @@ def _validate_sdpa_input(
     #         f"but got query.dtype: {query.dtype}, key.dtype: {key.dtype}, "
     #         f"and value.dtype: {value.dtype} instead."
     #     )
-    if query.dtype != torch.float8_e4m3fn:
+    if query.dtype not in (torch.float16, torch.bfloat16, torch.float8_e4m3fn):
         raise ValueError(
-            f"Expected query to have dtype torch.float8_e4m3fn, " f"but got query.dtype: {query.dtype} instead."
+            f"Expected query to have dtype torch.float16, torch.bfloat16, or torch.float8_e4m3fn, "
+            f"but got query.dtype: {query.dtype} instead."
         )
     if query.dtype != key.dtype:
         raise ValueError(
@@ -145,6 +146,38 @@ def can_use_fp8_attention_forward(
     return True, ""
 
 
+def _fp8_attention_wrapper(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: Optional[torch.Tensor] = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    *,
+    scale: Optional[float] = None,
+    scale_q: Optional[torch.Tensor] = None,
+    scale_k: Optional[torch.Tensor] = None,
+) -> Tensor:
+    if (scale_q is None) != (scale_k is None):
+        raise ValueError("scale_q and scale_k must be both provided or both not provided")
+
+    if scale_q is None:
+        query, scale_q = dynamically_quantize_fp8(query, reduction_dim=-1)
+        key, scale_k = dynamically_quantize_fp8(key, reduction_dim=-1)
+
+    return fp8_attention_forward(
+        query,
+        key,
+        value,
+        scale_q,
+        scale_k,
+        attn_mask=attn_mask,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+        scale=scale,
+    )
+
+
 def fp8_attention_forward(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -154,8 +187,8 @@ def fp8_attention_forward(
     is_causal: bool = False,
     *,
     scale: Optional[float] = None,
-    scale_q: torch.Tensor,
-    scale_k: torch.Tensor,
+    scale_q: Optional[torch.Tensor] = None,
+    scale_k: Optional[torch.Tensor] = None,
 ) -> Tensor:
     supported, reason = can_use_fp8_attention_forward(
         query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
@@ -171,40 +204,37 @@ def fp8_attention_forward(
         for x in [query, key, value]:
             torch._dynamo.mark_static(x, -3)
             torch._dynamo.mark_static(x, -1)
-        out = quantum_attn_ops.fp8_attention_forward(
+        out = _fp8_attention_wrapper(
             query,
             key,
             value,
-            scale_q,
-            scale_k,
             attn_mask=attn_mask,
             dropout_p=dropout_p,
             is_causal=is_causal,
             scale=scale,
+            scale_q=scale_q,
+            scale_k=scale_k,
         )
         return out
 
     if config.attention.force_eager_fallback:
-        return quantum_attn_ops.fp8_attention_forward(
+        out = _fp8_attention_wrapper(
             query,
             key,
             value,
-            scale_q,
-            scale_k,
             attn_mask=attn_mask,
             dropout_p=dropout_p,
             is_causal=is_causal,
             scale=scale,
+            scale_q=scale_q,
+            scale_k=scale_k,
         )
+        return out
 
     if not torch._dynamo.is_dynamo_supported():
         raise RuntimeError("fp8_attention_forward requires dynamo support")
     if not torch._dynamo.is_inductor_supported():
         raise RuntimeError("fp8_attention_forward requires inductor support")
-
-    # Dynamo is expecting a callable with "__code__" attribute.
-    def _fp8_attention_wrapper(*args, **kwargs):
-        return quantum_attn_ops.fp8_attention_forward(*args, **kwargs)
 
     with _set_compilation_env():
         with torch._dynamo.utils.disable_cache_limit():
@@ -215,11 +245,11 @@ def fp8_attention_forward(
                     query,
                     key,
                     value,
-                    scale_q,
-                    scale_k,
                     attn_mask=attn_mask,
                     dropout_p=dropout_p,
                     is_causal=is_causal,
                     scale=scale,
+                    scale_q=scale_q,
+                    scale_k=scale_k,
                 )
                 return out
