@@ -56,11 +56,15 @@ def _validate_sdpa_input(
             f"Expected query to have dtype torch.float16, torch.bfloat16, or torch.float8_e4m3fn, "
             f"but got query.dtype: {query.dtype} instead."
         )
-    if query.dtype != key.dtype or query.dtype != value.dtype:
+    if query.dtype != key.dtype:
         raise ValueError(
-            f"Expected query, key, and value to have the same dtype, "
-            f"but got query.dtype: {query.dtype}, key.dtype: {key.dtype}, "
-            f"and value.dtype: {value.dtype} instead."
+            f"Expected query and key to have the same dtype, "
+            f"but got query.dtype: {query.dtype}, key.dtype: {key.dtype} instead."
+        )
+    if value.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(
+            f"Expected value to have dtype torch.float16 or torch.bfloat16, "
+            f"but got value.dtype: {value.dtype} instead."
         )
     if query.device != key.device or query.device != value.device:
         raise ValueError(
@@ -153,21 +157,13 @@ def _fp8_attention_wrapper(
     scale: Optional[float] = None,
     scale_q: Optional[torch.Tensor] = None,
     scale_k: Optional[torch.Tensor] = None,
-    scale_v: Optional[torch.Tensor] = None,
-    out_dtype: Optional[torch.dtype] = None,
 ) -> Tensor:
-    if (scale_q is None) != (scale_k is None) or (scale_q is None) != (scale_v is None):
+    if (scale_q is None) != (scale_k is None):
         raise ValueError("scale_q and scale_k must be both provided or both not provided")
 
     if scale_q is None:
-        if out_dtype is None:
-            out_dtype = query.dtype
         query, scale_q = dynamically_quantize_fp8(query, reduction_dim=-1)
         key, scale_k = dynamically_quantize_fp8(key, reduction_dim=-1)
-        value, scale_v = dynamically_quantize_fp8(value, reduction_dim=-2)
-    else:
-        if out_dtype is None:
-            raise ValueError("out_dtype must be provided if scale_q, scale_k, and scale_v are provided")
 
     return quantum_attn_ops.fp8_attention_forward(
         query,
@@ -175,12 +171,10 @@ def _fp8_attention_wrapper(
         value,
         scale_q,
         scale_k,
-        scale_v,
         attn_mask=attn_mask,
         dropout_p=dropout_p,
         is_causal=is_causal,
         scale=scale,
-        out_dtype=out_dtype,
     )
 
 
@@ -195,8 +189,6 @@ def fp8_attention_forward(
     scale: Optional[float] = None,
     scale_q: Optional[torch.Tensor] = None,
     scale_k: Optional[torch.Tensor] = None,
-    scale_v: Optional[torch.Tensor] = None,
-    out_dtype: Optional[torch.dtype] = None,
 ) -> Tensor:
     supported, reason = can_use_fp8_attention_forward(
         query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
@@ -222,8 +214,6 @@ def fp8_attention_forward(
             scale=scale,
             scale_q=scale_q,
             scale_k=scale_k,
-            scale_v=scale_v,
-            out_dtype=out_dtype,
         )
         return out
 
@@ -238,8 +228,6 @@ def fp8_attention_forward(
             scale=scale,
             scale_q=scale_q,
             scale_k=scale_k,
-            scale_v=scale_v,
-            out_dtype=out_dtype,
         )
         return out
 
@@ -263,7 +251,5 @@ def fp8_attention_forward(
                     scale=scale,
                     scale_q=scale_q,
                     scale_k=scale_k,
-                    scale_v=scale_v,
-                    out_dtype=out_dtype,
                 )
                 return out

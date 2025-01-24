@@ -28,7 +28,7 @@ from quantum_attn import config
 
 from quantum_attn.utils import checks
 
-from .mm_common import get_device_shared_memory, mm_options, reduce_block_size_for_cuda, require_dense_memory
+from .mm_common import acc_type, get_device_shared_memory, mm_options, reduce_block_size_for_cuda, require_dense_memory
 
 quantum_attn_ops = torch.ops.quantum_attn
 
@@ -335,7 +335,7 @@ def _attn_fwd_inner(
         alpha = ex2(m_i_m_ij)
 
 {{% for i in range(TILES) %}}
-        acc_{{{{i}}}} = acc_{{{{i}}}} * alpha[:, None].to(acc_0.dtype)
+        acc_{{{{i}}}} = mul(acc_{{{{i}}}}, alpha[:, None])
 {{% endfor %}}
 
         p = ex2(qk)
@@ -361,7 +361,7 @@ def _attn_fwd_inner(
         l_i, m_i,
     )
 
-{{{{def_kernel("Q", "K", "V", "Q_scale", "K_scale", "V_scale")}}}}
+{{{{def_kernel("Q", "K", "V", "Q_scale", "K_scale")}}}}
     Z = {{{{size("Q", 0)}}}}
     H = {{{{size("Q", 1)}}}}
     N_CTX_Q = {{{{size("Q", 2)}}}}
@@ -391,10 +391,6 @@ def _attn_fwd_inner(
     stride_k_scale_h = {{{{stride("K_scale", 1)}}}}
     stride_k_scale_m = {{{{stride("K_scale", 2)}}}}
 
-    stride_v_scale_z = {{{{stride("V_scale", 0)}}}}
-    stride_v_scale_h = {{{{stride("V_scale", 1)}}}}
-    stride_v_scale_d = {{{{stride("V_scale", 2)}}}}
-
     start_pid = tl.program_id(0)
 
     workspace_base = ws_ptr + start_pid * 2 * TMA_SIZE
@@ -412,7 +408,6 @@ def _attn_fwd_inner(
 
         q_scale_offset = off_z * stride_q_scale_z + off_h * stride_q_scale_h
         k_scale_offset = off_z * stride_k_scale_z + off_h * stride_k_scale_h
-        v_scale_offset = off_z * stride_v_scale_z + off_h * stride_v_scale_h
 
         q_offset = off_z * stride_qz + off_h * stride_qh
         k_offset = off_z * stride_kz + off_h * stride_kh
@@ -442,14 +437,6 @@ def _attn_fwd_inner(
             strides=(stride_k_scale_m,),
             offsets=(0,),
             block_shape=(BLOCK_N,),
-            order=(0,),
-        )
-        V_scale_block_ptr = tl.make_block_ptr(
-            base=V_scale + v_scale_offset,
-            shape=(D,),
-            strides=(stride_v_scale_d,),
-            offsets=(0,),
-            block_shape=(BLOCK_K,),
             order=(0,),
         )
 
@@ -483,7 +470,7 @@ def _attn_fwd_inner(
 
         # initialize pointer to m and l
 {{% for i in range(TILES) %}}
-        acc_{{{{i}}}} = tl.zeros([BLOCK_M, BLOCK_K], dtype=tl.float32)
+        acc_{{{{i}}}} = tl.zeros([BLOCK_M, BLOCK_K], dtype=ACC_TYPE)
 {{% endfor %}}
         m_i = tl.full([BLOCK_M], -float("inf"), dtype=acc_0.dtype)
         l_i = tl.full([BLOCK_M], 1.0, dtype=acc_0.dtype)
@@ -553,13 +540,7 @@ def _attn_fwd_inner(
         idx_h = tl.full([1, 1, 1, 1], off_h, dtype=idx_m.dtype)
 
 {{% for i in range(TILES) %}}
-        v_scale = tl.load(V_scale_block_ptr, boundary_check=()).to(tl.float32)
-{{% if i + 1 < TILES %}}
-        V_scale_block_ptr = tl.advance(V_scale_block_ptr, (BLOCK_K,))
-{{% endif %}}
-        acc_{{{{i}}}} = acc_{{{{i}}}} * v_scale[None, :]
-
-        acc_{{{{i}}}} = acc_{{{{i}}}} / l_i[:, None]
+        acc_{{{{i}}}} = div(acc_{{{{i}}}}, l_i[:, None])
         acc_{{{{i}}}} = acc_{{{{i}}}}[None, None, :, :]
         idx_d = tl.arange({{{{i}}}} * BLOCK_K, {{{{i + 1}}}} * BLOCK_K)[None, None, None, :]
         mask = (idx_z < Z) & (idx_h < H) & (idx_m < N_CTX_Q) & (idx_d < D)
@@ -694,11 +675,11 @@ def early_fp8_attention_config_prune(configs, query, key, value, scale_q, scale_
 
 def get_fp8_attention_layout(
     query,
-    out_dtype,
+    value,
 ):
     return ir.FixedLayout(
         query.get_device(),
-        out_dtype,
+        value.get_dtype(),
         ir.convert_shape_to_inductor(query.get_size()),
     )
 
@@ -710,7 +691,6 @@ def generate_fp8_attention_template_choices(
     value,
     scale_q,
     scale_k,
-    scale_v,
     attn_mask=None,
     dropout_p=0.0,
     is_causal=False,
@@ -732,7 +712,7 @@ def generate_fp8_attention_template_choices(
     m1, n1, k1, layout1, mat1, mat2 = mm_args(query, key_t)
     stage = 3 if is_causal else 1
 
-    args = [query, key, value, scale_q, scale_k, scale_v]
+    args = [query, key, value, scale_q, scale_k]
     if attn_mask is not None:
         args.append(attn_mask)
 
@@ -755,7 +735,7 @@ def generate_fp8_attention_template_choices(
 
     for fa_config in triton_configs:
         mm_options_ = mm_options(fa_config, m1, n1, k1, layout1)
-        mm_options_["ACC_TYPE"] = "tl.float32"
+        mm_options_["ACC_TYPE"] = acc_type(value.get_dtype())
         fast_softmax = not dynamic and mm_options_["BLOCK_N"] >= N_CTX_K
         even_n_symbolic = (
             # it isn't worth guarding on this
@@ -791,22 +771,20 @@ def tuned_fp8_attention(
     value,
     scale_q,
     scale_k,
-    scale_v,
     attn_mask=None,
     dropout_p=0.0,
     is_causal=False,
     *,
     scale=None,
-    out_dtype,
     layout=None,
 ):
     query, key, value = (ir.ExternKernel.realize_input(x) for x in (query, key, value))
     query = require_dense_memory(query, num_dims=1)
     key, value = (require_dense_memory(x, num_dims=2) for x in (key, value))
 
-    scale_q, scale_k, scale_v = (ir.ExternKernel.realize_input(x) for x in (scale_q, scale_k, scale_v))
-    scale_q, scale_k, scale_v = (require_dense_memory(x, num_dims=1) for x in (scale_q, scale_k, scale_v))
-    for x in (query, key, value, scale_q, scale_k, scale_v, attn_mask):
+    scale_q, scale_k = (ir.ExternKernel.realize_input(x) for x in (scale_q, scale_k))
+    scale_q, scale_k = (require_dense_memory(x, num_dims=1) for x in (scale_q, scale_k))
+    for x in (query, key, value, scale_q, scale_k, attn_mask):
         if x is not None:
             x.freeze_layout()
     key_t = ir.PermuteView.create(key, [0, 1, 3, 2])
@@ -830,16 +808,16 @@ def tuned_fp8_attention(
 
     if attn_mask is None:
         args = [query, key, value]
-        args += [scale_q, scale_k, scale_v]
+        args += [scale_q, scale_k]
         kwargs["attn_mask"] = None
         ordered_kwargs_for_cpp_kernel.insert(0, "attn_mask")
     else:
         args = [query, key, value]
-        args += [scale_q, scale_k, scale_v]
+        args += [scale_q, scale_k]
         args.append(attn_mask)
 
     if layout is None:
-        layout2 = get_fp8_attention_layout(query, out_dtype)
+        layout2 = get_fp8_attention_layout(query, value)
     else:
         layout2 = layout
 
