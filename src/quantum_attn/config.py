@@ -16,7 +16,7 @@ class dynamo:
 
 
 class triton:
-    enable_fast_math = os.getenv("QUANTUM_ATTN_ENABLE_FAST_MATH") == "1"
+    enable_fast_math = os.getenv("QUANTUM_ATTN_ENABLE_FAST_MATH", "1") == "1"
 
     allow_reduced_precision_compute = os.getenv("PARA_ATTN_ALLOW_REDUCED_PRECISION_COMPUTE", "1") == "1"
 
