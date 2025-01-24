@@ -26,11 +26,14 @@ def _fp8_attention_forward(
     *,
     scale: Optional[float] = None,
 ) -> torch.Tensor:
-    dtype = scale_q.dtype
+    dtype = value.dtype
 
     query = query.to(dtype)
     key = key.to(dtype)
     value = value.to(dtype)
+
+    scale_q = scale_q.to(dtype)
+    scale_k = scale_k.to(dtype)
 
     query = query * scale_q[..., None]
     key = key * scale_k[..., None]
