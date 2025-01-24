@@ -180,6 +180,7 @@ def _fp8_attention_wrapper(
         dropout_p=dropout_p,
         is_causal=is_causal,
         scale=scale,
+        out_dtype=out_dtype,
     )
 
 
