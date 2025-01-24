@@ -18,6 +18,8 @@ def fp8_attn_func(
     scale: float = None,
     scale_q: Optional[torch.Tensor] = None,
     scale_k: Optional[torch.Tensor] = None,
+    scale_v: Optional[torch.Tensor] = None,
+    out_dtype: Optional[torch.dtype] = None,
 ) -> torch.Tensor:
     return fp8_attention_forward(
         query,
@@ -29,4 +31,6 @@ def fp8_attn_func(
         scale=scale,
         scale_q=scale_q,
         scale_k=scale_k,
+        scale_v=scale_v,
+        out_dtype=out_dtype,
     )
