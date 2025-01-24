@@ -219,7 +219,7 @@ def ex2(x):
 @triton.jit
 def dot(a, b, acc):
 {{% if USE_FAST_ACCUM %}}
-    acc = tl.dot(a, b, acc)
+    acc = tl.dot(a, b, acc, out_dtype=acc.dtype)
 {{% else %}}
     acc += tl.dot(a, b, out_dtype=acc.dtype)
 {{% endif %}}
