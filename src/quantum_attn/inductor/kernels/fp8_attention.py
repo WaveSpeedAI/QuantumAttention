@@ -297,7 +297,7 @@ def _attn_fwd_inner(
         # tl.debug_barrier()
 {{% endif %}}
 
-        qk = qk * (q_scale[:, None] * k_scale[None, :])
+        qk = qk * q_scale[:, None] * k_scale[None, :]
 {{% if USE_FP16_COMPUTE %}}
         qk = qk.to(tl.float16)
 {{% endif %}}
