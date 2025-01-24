@@ -8,25 +8,15 @@ from quantum_attn import quantum_attn_interface
 if not torch.cuda.is_available():
     pytest.skip("CUDA is not available", allow_module_level=True)
 
-# @pytest.mark.parametrize("B", [1, 2])
-# @pytest.mark.parametrize("H", [8, 16])
-# @pytest.mark.parametrize("S_Q", [1024, 1000])
-# @pytest.mark.parametrize("S_KV", [1024, 1000])
-# @pytest.mark.parametrize("D", [64, 128, 256])
-# @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-# @pytest.mark.parametrize("device", ["cuda"])
-# @pytest.mark.parametrize("is_causal", [False, True])
-# @pytest.mark.parametrize("force_eager_fallback", [False])
 
-
-@pytest.mark.parametrize("B", [1])
-@pytest.mark.parametrize("H", [1])
-@pytest.mark.parametrize("S_Q", [256])
-@pytest.mark.parametrize("S_KV", [256])
-@pytest.mark.parametrize("D", [64])
-@pytest.mark.parametrize("dtype", [torch.float16])
+@pytest.mark.parametrize("B", [1, 2])
+@pytest.mark.parametrize("H", [8, 16])
+@pytest.mark.parametrize("S_Q", [1024, 1000])
+@pytest.mark.parametrize("S_KV", [1024, 1000])
+@pytest.mark.parametrize("D", [64, 128, 256])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("device", ["cuda"])
-@pytest.mark.parametrize("is_causal", [False])
+@pytest.mark.parametrize("is_causal", [False, True])
 @pytest.mark.parametrize("force_eager_fallback", [False])
 @torch.no_grad()
 def test_dynamic_fp8_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, force_eager_fallback):
