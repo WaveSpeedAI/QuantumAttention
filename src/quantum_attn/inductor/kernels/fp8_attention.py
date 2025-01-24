@@ -757,7 +757,7 @@ def generate_fp8_attention_template_choices(
             EVEN_N=even_n_symbolic,
             NUM_STAGES=fa_config.num_stages,
             FAST_SOFTMAX=fast_softmax,
-            USE_FP16_COMPUTE=scale_q.get_dtype() == torch.float16 and config.triton.allow_reduced_precision_compute,
+            USE_FP16_COMPUTE=value.get_dtype() == torch.float16 and config.triton.allow_reduced_precision_compute,
             TMA_SIZE=TMA_DESCRIPTOR_SIZE,
             NUM_SMS=get_num_sms(),
             **mm_options_,
