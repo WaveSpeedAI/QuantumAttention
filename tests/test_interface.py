@@ -51,11 +51,12 @@ def test_fp8_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, force_eager
     assert rmse < 1e-2, f"RMSE: {rmse}"
 
 
+@pytest.mark.parametrize("D", [64, 128, 256])
 @pytest.mark.parametrize("dtype", [torch.float16])
 @pytest.mark.parametrize("device", ["cuda"])
 @pytest.mark.parametrize("is_causal", [False])
 @torch.no_grad()
-def test_benchmark_fp8_attn_func(dtype, device, is_causal):
+def test_benchmark_fp8_attn_func(D, dtype, device, is_causal):
     torch.manual_seed(0)
 
     @contextmanager
@@ -84,7 +85,6 @@ def test_benchmark_fp8_attn_func(dtype, device, is_causal):
         H = 8
         S_Q = 4096
         S_KV = 4096
-        D = 64
 
         query = torch.randn(B, H, S_Q, D, dtype=dtype, device=device)
         key = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
