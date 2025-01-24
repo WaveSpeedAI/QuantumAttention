@@ -662,11 +662,11 @@ def early_fp8_attention_config_prune(configs, query, key, value, scale_q, scale_
     filtered_configs = []
     for c in configs:
         kw = c.kwargs
-        BLOCK_M, BLOCK_N, BLOCK_K = kw["BLOCK_M"], kw["BLOCK_N"], kw["BLOCK_K"]
+        BLOCK_M, BLOCK_N, BLOCK_DMODEL = kw["BLOCK_M"], kw["BLOCK_N"], kw["BLOCK_DMODEL"]
         num_stages = c.num_stages
         required_shared_memory = (
             BLOCK_N * num_stages * (key_dtype.itemsize + value_dtype.itemsize) + BLOCK_M * query_dtype.itemsize
-        ) * BLOCK_K
+        ) * BLOCK_DMODEL
         required_shared_memory += BLOCK_N * num_stages * scale_k_dtype.itemsize + BLOCK_M * scale_q_dtype.itemsize
         if required_shared_memory <= max_shared_memory:
             filtered_configs.append(c)
