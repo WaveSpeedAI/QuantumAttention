@@ -20,7 +20,6 @@ def _fp8_attention_forward(
     value: torch.Tensor,
     scale_q: torch.Tensor,
     scale_k: torch.Tensor,
-    scale_v: torch.Tensor,
     attn_mask: Optional[torch.Tensor] = None,
     dropout_p: float = 0.0,
     is_causal: bool = False,
@@ -35,11 +34,10 @@ def _fp8_attention_forward(
 
     query = query * scale_q[..., None]
     key = key * scale_k[..., None]
-    value = value * scale_v.unsqueeze(-2)
 
     return aten.scaled_dot_product_attention(
         query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
-    )
+    ).contiguous()
 
 
 @_torch_custom_op_wrapper("quantum_attn::fp8_attention_forward", mutates_args=(), device_types=("cuda",))
@@ -49,7 +47,6 @@ def fp8_attention_forward(
     value: torch.Tensor,
     scale_q: torch.Tensor,
     scale_k: torch.Tensor,
-    scale_v: torch.Tensor,
     attn_mask: Optional[torch.Tensor] = None,
     dropout_p: float = 0.0,
     is_causal: bool = False,
@@ -66,7 +63,6 @@ def fp8_attention_forward(
         scale=scale,
         scale_q=scale_q,
         scale_k=scale_k,
-        scale_v=scale_v,
     )
 
 
@@ -77,7 +73,6 @@ def _(
     value: torch.Tensor,
     scale_q: torch.Tensor,
     scale_k: torch.Tensor,
-    scale_v: torch.Tensor,
     attn_mask: Optional[torch.Tensor] = None,
     dropout_p: float = 0.0,
     is_causal: bool = False,
@@ -95,5 +90,4 @@ def _(
         scale=scale,
         scale_q=scale_q,
         scale_k=scale_k,
-        scale_v=scale_v,
     )

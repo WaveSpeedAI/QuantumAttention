@@ -18,7 +18,6 @@ def fp8_attn_func(
     scale: float = None,
     scale_q: torch.Tensor,
     scale_k: torch.Tensor,
-    scale_v: torch.Tensor,
 ) -> torch.Tensor:
     return fp8_attention_forward(
         query,
@@ -30,7 +29,6 @@ def fp8_attn_func(
         scale=scale,
         scale_q=scale_q,
         scale_k=scale_k,
-        scale_v=scale_v,
     )
 
 
@@ -46,7 +44,6 @@ def dynamic_fp8_attn_func(
 ) -> torch.Tensor:
     query, scale_q = dynamically_quantize_fp8(query, reduction_dim=-1)
     key, scale_k = dynamically_quantize_fp8(key, reduction_dim=-1)
-    value, scale_v = dynamically_quantize_fp8(value, reduction_dim=-2)
 
     return fp8_attention_forward(
         query,
@@ -58,5 +55,4 @@ def dynamic_fp8_attn_func(
         scale=scale,
         scale_q=scale_q,
         scale_k=scale_k,
-        scale_v=scale_v,
     )

@@ -1,4 +1,5 @@
 import functools
+import unittest
 
 import torch
 from torch._inductor.kernel import mm_common
@@ -6,6 +7,18 @@ from torch._inductor.utils import ceildiv as cdiv
 
 from quantum_attn import config
 from quantum_attn.utils import checks
+
+
+def acc_type(dtype):
+    if dtype == torch.float16:
+        if config.triton.allow_reduced_precision_compute and torch.version.hip is None:
+            return "tl.float16"
+        else:
+            return "tl.float32"
+    elif dtype == torch.bfloat16:
+        return "tl.float32"
+    else:
+        return f"tl.{dtype}".replace("torch.", "")
 
 
 @functools.cache
@@ -21,7 +34,13 @@ def get_device_shared_memory(device=0):
 
 
 def mm_options(c, sym_m, sym_n, sym_k, layout, b_prologue_cast_type=None, optimize_block_size=True):
-    options = mm_common.mm_options(c, sym_m, sym_n, sym_k, layout, b_prologue_cast_type=b_prologue_cast_type)
+    with unittest.mock.patch.object(mm_common, "acc_type", acc_type):
+        if checks.torch_version_compare("ge", "2.3.0"):
+            options = mm_common.mm_options(
+                config, sym_m, sym_n, sym_k, layout, b_prologue_cast_type=b_prologue_cast_type
+            )
+        else:
+            options = mm_common.mm_options(config, sym_k, layout, b_prologue_cast_type=b_prologue_cast_type)
     options["ENABLE_FAST_MATH"] = (
         config.triton.enable_fast_math
         and checks.has_triton_language("inline_asm_elementwise")

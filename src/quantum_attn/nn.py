@@ -94,6 +94,9 @@ def can_use_fp8_attention_forward(
     if not checks.cuda_capability_compare("ge", 9, 0, device=query.device):
         return False, "Minimum CUDA capability of 9.0 is required"
 
+    if not checks.torch_version_compare("ge", "2.6.0"):
+        return False, "Minimum PyTorch version of 2.6.0 is required"
+
     if not checks.has_triton_tma_support():
         return False, "Triton TMA support is required"
 

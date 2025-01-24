@@ -217,6 +217,15 @@ def ex2(x):
     return y
 
 @triton.jit
+def dot(a, b, acc):
+{{% if USE_FAST_ACCUM %}}
+    acc = tl.dot(a, b, acc, out_dtype=acc.dtype)
+{{% else %}}
+    acc += tl.dot(a, b, out_dtype=acc.dtype)
+{{% endif %}}
+    return acc
+
+@triton.jit
 def _attn_fwd_inner(
 {{% for i in range(TILES) %}}
                     acc_{{{{i}}}},
@@ -270,21 +279,12 @@ def _attn_fwd_inner(
         K_scale_block_ptr = tl.advance(K_scale_block_ptr, (BLOCK_N,))
 
         # -- compute qk ----
-        if BLOCK_DMODEL == BLOCK_K:
-            k = tl._experimental_descriptor_load(
-                K_desc_ptr, (start_n, 0), (BLOCK_N, BLOCK_K), q_0.dtype
-            )
-            qk = tl.dot(q_0, k.T, out_dtype=tl.float32)
-        else:
+        qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
 {{% for i in range(TILES) %}}
-            k = tl._experimental_descriptor_load(
-                K_desc_ptr, (start_n, BLOCK_K * {{{{i}}}}), (BLOCK_N, BLOCK_K), q_0.dtype
-            )
-{{% if i == 0 %}}
-            qk = tl.dot(q_{{{{i}}}}, k.T, out_dtype=tl.float32)
-{{% else %}}
-            qk += tl.dot(q_{{{{i}}}}, k.T, out_dtype=tl.float32)
-{{% endif %}}
+        k = tl._experimental_descriptor_load(
+            K_desc_ptr, (start_n, BLOCK_K * {{{{i}}}}), (BLOCK_N, BLOCK_K), q_0.dtype
+        )
+        qk = dot(q_{{{{i}}}}, k.T, qk)
 {{% endfor %}}
 
 {{% for i in range(TILES) %}}
@@ -352,9 +352,7 @@ def _attn_fwd_inner(
 
         # -- update output accumulator --
 {{% for i in range(TILES) %}}
-        pv = tl.dot(p, v_{{{{i}}}}, out_dtype=tl.float32)
-        pv = pv.to(acc_0.dtype)
-        acc_{{{{i}}}} = add(acc_{{{{i}}}}, pv)
+        acc_{{{{i}}}} = dot(p, v_{{{{i}}}}, acc_{{{{i}}}})
 {{% endfor %}}
     return (
 {{% for i in range(TILES) %}}
@@ -363,7 +361,7 @@ def _attn_fwd_inner(
         l_i, m_i,
     )
 
-{{{{def_kernel("Q", "K", "V", "Q_scale", "K_scale", "V_scale")}}}}
+{{{{def_kernel("Q", "K", "V", "Q_scale", "K_scale")}}}}
     Z = {{{{size("Q", 0)}}}}
     H = {{{{size("Q", 1)}}}}
     N_CTX_Q = {{{{size("Q", 2)}}}}
@@ -393,10 +391,6 @@ def _attn_fwd_inner(
     stride_k_scale_h = {{{{stride("K_scale", 1)}}}}
     stride_k_scale_m = {{{{stride("K_scale", 2)}}}}
 
-    stride_v_scale_z = {{{{stride("V_scale", 0)}}}}
-    stride_v_scale_h = {{{{stride("V_scale", 1)}}}}
-    stride_v_scale_d = {{{{stride("V_scale", 2)}}}}
-
     start_pid = tl.program_id(0)
 
     num_programs_m = (N_CTX_Q + BLOCK_M - 1) // BLOCK_M
@@ -410,7 +404,6 @@ def _attn_fwd_inner(
 
         q_scale_offset = off_z * stride_q_scale_z + off_h * stride_q_scale_h
         k_scale_offset = off_z * stride_k_scale_z + off_h * stride_k_scale_h
-        v_scale_offset = off_z * stride_v_scale_z + off_h * stride_v_scale_h
 
         q_offset = off_z * stride_qz + off_h * stride_qh
         k_offset = off_z * stride_kz + off_h * stride_kh
@@ -440,14 +433,6 @@ def _attn_fwd_inner(
             strides=(stride_k_scale_m,),
             offsets=(0,),
             block_shape=(BLOCK_N,),
-            order=(0,),
-        )
-        V_scale_block_ptr = tl.make_block_ptr(
-            base=V_scale + v_scale_offset,
-            shape=(D,),
-            strides=(stride_v_scale_d,),
-            offsets=(0,),
-            block_shape=(BLOCK_K,),
             order=(0,),
         )
 
@@ -556,15 +541,7 @@ def _attn_fwd_inner(
         idx_h = tl.full([1, 1, 1, 1], off_h, dtype=idx_m.dtype)
 
 {{% for i in range(TILES) %}}
-
         acc_{{{{i}}}} = div(acc_{{{{i}}}}, l_i[:, None])
-        v_scale = tl.load(V_scale_block_ptr, boundary_check=(0,)).to(acc_0.dtype)
-
-{{% if i + 1 < TILES %}}
-        V_scale_block_ptr = tl.advance(V_scale_block_ptr, (BLOCK_K,))
-{{% endif %}}
-        acc_{{{{i}}}} = mul(acc_{{{{i}}}}, v_scale[None, :])
-
         acc_{{{{i}}}} = acc_{{{{i}}}}[None, None, :, :]
         idx_d = tl.arange({{{{i}}}} * BLOCK_K, {{{{i + 1}}}} * BLOCK_K)[None, None, None, :]
         mask = (idx_z < Z) & (idx_h < H) & (idx_m < N_CTX_Q) & (idx_d < D)
@@ -598,11 +575,11 @@ def fp8_attention_heuristic_configs(
         confs = ""
     else:
         if head_dim == 64:
-            confs = "64.64.64.4.3 64.128.32.4.2 64.64.64.4.1 64.64.64.4.2 64.32.64.4.1 64.128.64.4.1 64.128.64.4.2 64.64.64.4.4 64.64.32.4.2 128.128.64.4.4 128.64.64.4.1 128.32.64.4.1"
+            confs = "128.128.64.8.1"
         elif head_dim == 128:
-            confs = "128.128.64.4.2 64.128.64.4.2 128.64.128.4.1 64.64.64.4.1 64.128.128.4.2 128.64.64.4.3 128.64.64.4.4 64.64.128.4.2 128.64.64.4.2 128.32.128.4.1 128.128.128.4.2 64.64.128.4.1"
+            confs = "128.128.128.8.1"
         elif head_dim == 256:
-            confs = "128.64.128.4.1 64.64.128.4.2 128.32.128.4.1 64.64.64.4.2 128.64.64.4.1 64.128.128.4.1 64.64.128.4.1 64.128.64.4.1 64.32.128.4.4 64.128.128.4.2 64.32.128.4.2 64.32.64.4.3"
+            confs = "128.128.128.8.1"
 
     confs = [[int(x) for x in c.split(".")] for c in confs.split() if c]
 
@@ -699,11 +676,11 @@ def early_fp8_attention_config_prune(configs, query, key, value, scale_q, scale_
 
 def get_fp8_attention_layout(
     query,
-    scale_q,
+    value,
 ):
     return ir.FixedLayout(
         query.get_device(),
-        scale_q.get_dtype(),
+        value.get_dtype(),
         ir.convert_shape_to_inductor(query.get_size()),
     )
 
@@ -715,7 +692,6 @@ def generate_fp8_attention_template_choices(
     value,
     scale_q,
     scale_k,
-    scale_v,
     attn_mask=None,
     dropout_p=0.0,
     is_causal=False,
@@ -737,7 +713,7 @@ def generate_fp8_attention_template_choices(
     m1, n1, k1, layout1, mat1, mat2 = mm_args(query, key_t)
     stage = 3 if is_causal else 1
 
-    args = [query, key, value, scale_q, scale_k, scale_v]
+    args = [query, key, value, scale_q, scale_k]
     if attn_mask is not None:
         args.append(attn_mask)
 
@@ -760,7 +736,6 @@ def generate_fp8_attention_template_choices(
 
     for fa_config in triton_configs:
         mm_options_ = mm_options(fa_config, m1, n1, k1, layout1)
-        mm_options_["ACC_TYPE"] = "tl.float32"
         fast_softmax = not dynamic and mm_options_["BLOCK_N"] >= N_CTX_K
         even_n_symbolic = (
             # it isn't worth guarding on this
@@ -796,7 +771,6 @@ def tuned_fp8_attention(
     value,
     scale_q,
     scale_k,
-    scale_v,
     attn_mask=None,
     dropout_p=0.0,
     is_causal=False,
@@ -805,8 +779,8 @@ def tuned_fp8_attention(
     layout=None,
 ):
     query, key, value = realize_inputs(query, key, value)
-    scale_q, scale_k, scale_v = realize_inputs(scale_q, scale_k, scale_v)
-    for x in (query, key, value, scale_q, scale_k, scale_v, attn_mask):
+    scale_q, scale_k = realize_inputs(scale_q, scale_k)
+    for x in (query, key, value, scale_q, scale_k, attn_mask):
         if x is not None:
             x.freeze_layout()
     key_t = ir.PermuteView.create(key, [0, 1, 3, 2])
@@ -830,16 +804,16 @@ def tuned_fp8_attention(
 
     if attn_mask is None:
         args = [query, key, value]
-        args += [scale_q, scale_k, scale_v]
+        args += [scale_q, scale_k]
         kwargs["attn_mask"] = None
         ordered_kwargs_for_cpp_kernel.insert(0, "attn_mask")
     else:
         args = [query, key, value]
-        args += [scale_q, scale_k, scale_v]
+        args += [scale_q, scale_k]
         args.append(attn_mask)
 
     if layout is None:
-        layout2 = get_fp8_attention_layout(query, scale_q)
+        layout2 = get_fp8_attention_layout(query, value)
     else:
         layout2 = layout
 
