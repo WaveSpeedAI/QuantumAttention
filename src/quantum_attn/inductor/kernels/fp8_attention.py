@@ -217,6 +217,22 @@ def ex2(x):
     return y
 
 @triton.jit
+def ex2_fp16(x):
+{{% if ENABLE_FAST_MATH %}}
+    if x.numel % (num_threads() * 2) == 0:
+        y = tl.inline_asm_elementwise(
+            "ex2.approx.f16x2 $0, $1;", "=r, r", [x], dtype=tl.float16, is_pure=True, pack=2,
+        )
+    else:
+        y = tl.inline_asm_elementwise(
+            "ex2.approx.f16 $0, $1;", "=h, h", [x], dtype=tl.float16, is_pure=True, pack=1,
+        )
+{{% else %}}
+    y = {TritonOverrides.exp2("x.to(tl.float32)")}.to(x.dtype)
+{{% endif %}}
+    return y
+
+@triton.jit
 def dot(a, b, acc):
 {{% if USE_FAST_ACCUM %}}
     acc = tl.dot(a, b, acc, out_dtype=acc.dtype)
@@ -325,7 +341,10 @@ def _attn_fwd_inner(
         acc_{{{{i}}}} = mul(acc_{{{{i}}}}, alpha[:, None])
 {{% endfor %}}
 
-        p = ex2(qk)
+        if v_0.dtype == tl.float16:
+            p = ex2_fp16(qk)
+        else:
+            p = ex2(qk)
 
         l_ij = tl.reduce(p, 1, add)
 
