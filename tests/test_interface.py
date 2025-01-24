@@ -57,6 +57,52 @@ def test_fp8_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, force_eager
 @pytest.mark.parametrize("is_causal", [False])
 @torch.no_grad()
 def test_benchmark_fp8_attn_func(D, dtype, device, is_causal):
+    import triton
+
+    torch.manual_seed(0)
+
+    B = 2
+    H = 8
+    S_Q = 4096
+    S_KV = 4096
+
+    query = torch.randn(B, H, S_Q, D, dtype=dtype, device=device)
+    key = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
+    value = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
+
+    def torch_sdpa(query, key, value):
+        return F.scaled_dot_product_attention(query, key, value)
+
+    def fp8_attention(query, key, value):
+        return quantum_attn_interface.fp8_attn_func(query, key, value)
+
+    def torch_sdpa_fn():
+        torch_sdpa(query, key, value)
+
+    def fp8_attention_fn():
+        fp8_attention(query, key, value)
+
+    ms_sdpa = triton.testing.do_bench(torch_sdpa_fn)
+    ms_fp8_attention = triton.testing.do_bench(fp8_attention_fn)
+
+    flops_per_matmul = 2 * B * H * S_Q * S_KV * D
+    total_flops = 2 * flops_per_matmul
+
+    if is_causal:
+        total_flops //= 2
+
+    tflops_sdpa = total_flops * 1e-12 / (ms_sdpa * 1e-3)
+    tflops_fp8_attention = total_flops * 1e-12 / (ms_fp8_attention * 1e-3)
+    print(f"TFLOPS (SDPA): {tflops_sdpa:.2f}")
+    print(f"TFLOPS (FP8 Attention): {tflops_fp8_attention:.2f}")
+
+
+@pytest.mark.parametrize("D", [128])
+@pytest.mark.parametrize("dtype", [torch.float16])
+@pytest.mark.parametrize("device", ["cuda"])
+@pytest.mark.parametrize("is_causal", [False])
+@torch.no_grad()
+def test_benchmark_fp8_attn_func_with_proton(D, dtype, device, is_causal):
     torch.manual_seed(0)
 
     @contextmanager
