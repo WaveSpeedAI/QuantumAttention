@@ -755,6 +755,7 @@ def generate_fp8_attention_template_choices(
 
     for fa_config in triton_configs:
         mm_options_ = mm_options(fa_config, m1, n1, k1, layout1)
+        mm_options_["ACC_TYPE"] = "tl.float32"
         fast_softmax = not dynamic and mm_options_["BLOCK_N"] >= N_CTX_K
         even_n_symbolic = (
             # it isn't worth guarding on this
