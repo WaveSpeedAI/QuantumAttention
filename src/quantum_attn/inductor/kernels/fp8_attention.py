@@ -781,6 +781,8 @@ def tuned_fp8_attention(
     query, key, value = (ir.ExternKernel.realize_input(x) for x in (query, key, value))
     query = require_dense_memory(query, num_dims=1)
     key, value = (require_dense_memory(x, num_dims=2) for x in (key, value))
+
+    scale_q, scale_k = (ir.ExternKernel.realize_input(x) for x in (scale_q, scale_k))
     scale_q, scale_k = (require_dense_memory(x, num_dims=1) for x in (scale_q, scale_k))
     for x in (query, key, value, scale_q, scale_k, attn_mask):
         if x is not None:
