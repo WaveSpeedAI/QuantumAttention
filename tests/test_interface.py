@@ -46,6 +46,4 @@ def test_dynamic_fp8_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, for
 
     rmse = torch.sqrt(F.mse_loss(qattn_out, sdpa_out))
     print(f"RMSE: {rmse}")
-    print(f"qattn_out: {qattn_out}")
-    print(f"sdpa_out: {sdpa_out}")
     assert rmse < 1e-2, f"RMSE: {rmse}"
