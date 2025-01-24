@@ -51,6 +51,7 @@ setup(
             "expecttest",
             #
             "pandas",
+            "llnl-hatchet",
         ],
     },
 )
