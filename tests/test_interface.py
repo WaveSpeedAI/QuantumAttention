@@ -75,14 +75,17 @@ def test_benchmark_fp8_attn_func(D, dtype, device, is_causal):
     key = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
     value = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
 
-    def torch_sdpa_fn():
+    def fa_fn():
         flash_attention(query, key, value, is_causal)
+
+    def cudnn_sdpa_fn():
+        cudnn_sdpa(query, key, value, is_causal)
 
     def fp8_attention_fn():
         fp8_attention(query, key, value, is_causal)
 
-    ms_fa = triton.testing.do_bench(torch_sdpa_fn)
-    ms_cudnn_sdpa = triton.testing.do_bench(cudnn_sdpa)
+    ms_fa = triton.testing.do_bench(fa_fn)
+    ms_cudnn_sdpa = triton.testing.do_bench(cudnn_sdpa_fn)
     ms_fp8_attention = triton.testing.do_bench(fp8_attention_fn)
 
     flops_per_matmul = 2 * B * H * S_Q * S_KV * D
