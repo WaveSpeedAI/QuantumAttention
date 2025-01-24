@@ -36,11 +36,9 @@ def get_device_shared_memory(device=0):
 def mm_options(c, sym_m, sym_n, sym_k, layout, b_prologue_cast_type=None, optimize_block_size=True):
     with unittest.mock.patch.object(mm_common, "acc_type", acc_type):
         if checks.torch_version_compare("ge", "2.3.0"):
-            options = mm_common.mm_options(
-                config, sym_m, sym_n, sym_k, layout, b_prologue_cast_type=b_prologue_cast_type
-            )
+            options = mm_common.mm_options(c, sym_m, sym_n, sym_k, layout, b_prologue_cast_type=b_prologue_cast_type)
         else:
-            options = mm_common.mm_options(config, sym_k, layout, b_prologue_cast_type=b_prologue_cast_type)
+            options = mm_common.mm_options(c, sym_k, layout, b_prologue_cast_type=b_prologue_cast_type)
     options["ENABLE_FAST_MATH"] = (
         config.triton.enable_fast_math
         and checks.has_triton_language("inline_asm_elementwise")
