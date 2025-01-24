@@ -219,7 +219,7 @@ def ex2(x):
 @triton.jit
 def dot(a, b, acc):
 {{% if USE_FAST_ACCUM %}}
-    acc = tl.dot(a, b, acc, out_dtype=acc.dtype)
+    acc = tl.dot(a, b, acc)
 {{% else %}}
     acc += tl.dot(a, b, out_dtype=acc.dtype)
 {{% endif %}}
@@ -294,7 +294,7 @@ def _attn_fwd_inner(
 {{% endfor %}}
 
 {{% if NUM_STAGES > 1 %}}
-        tl.debug_barrier()
+        # tl.debug_barrier()
 {{% endif %}}
 
         qk = qk * (q_scale[:, None] * k_scale[None, :])
