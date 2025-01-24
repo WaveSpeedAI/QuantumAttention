@@ -6,9 +6,24 @@ import torch
 import torch.nn.functional as F
 import triton.profiler as proton
 from quantum_attn import quantum_attn_interface
+from torch.nn.attention import sdpa_kernel, SDPBackend
 
 if not torch.cuda.is_available():
     pytest.skip("CUDA is not available", allow_module_level=True)
+
+
+def flash_attention(query, key, value, is_causal=False):
+    with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+        return F.scaled_dot_product_attention(query, key, value, is_causal=is_causal)
+
+
+def cudnn_sdpa(query, key, value, is_causal=False):
+    with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
+        return F.scaled_dot_product_attention(query, key, value, is_causal=is_causal)
+
+
+def fp8_attention(query, key, value, is_causal=False):
+    return quantum_attn_interface.fp8_attn_func(query, key, value, is_causal=is_causal)
 
 
 @pytest.mark.parametrize("B", [1, 2])
@@ -27,26 +42,16 @@ def test_fp8_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, force_eager
     key = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
     value = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
 
-    sdpa_out = F.scaled_dot_product_attention(
-        query,
-        key,
-        value,
-        is_causal=is_causal,
-    )
+    fa_out = flash_attention(query, key, value, is_causal=is_causal)
 
     with quantum_attn.config.patch(
         {
             "attention.force_eager_fallback": force_eager_fallback,
         }
     ):
-        qattn_out = quantum_attn_interface.fp8_attn_func(
-            query,
-            key,
-            value,
-            is_causal=is_causal,
-        )
+        qattn_out = fp8_attention(query, key, value, is_causal=is_causal)
 
-    rmse = torch.sqrt(F.mse_loss(qattn_out, sdpa_out))
+    rmse = torch.sqrt(F.mse_loss(qattn_out, fa_out))
     print(f"RMSE: {rmse}")
     assert rmse < 1e-2, f"RMSE: {rmse}"
 
@@ -70,19 +75,14 @@ def test_benchmark_fp8_attn_func(D, dtype, device, is_causal):
     key = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
     value = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
 
-    def torch_sdpa(query, key, value, is_causal=is_causal):
-        return F.scaled_dot_product_attention(query, key, value, is_causal=is_causal)
-
-    def fp8_attention(query, key, value, is_causal=is_causal):
-        return quantum_attn_interface.fp8_attn_func(query, key, value, is_causal=is_causal)
-
     def torch_sdpa_fn():
-        torch_sdpa(query, key, value, is_causal)
+        flash_attention(query, key, value, is_causal)
 
     def fp8_attention_fn():
         fp8_attention(query, key, value, is_causal)
 
-    ms_sdpa = triton.testing.do_bench(torch_sdpa_fn)
+    ms_fa = triton.testing.do_bench(torch_sdpa_fn)
+    ms_cudnn_sdpa = triton.testing.do_bench(cudnn_sdpa)
     ms_fp8_attention = triton.testing.do_bench(fp8_attention_fn)
 
     flops_per_matmul = 2 * B * H * S_Q * S_KV * D
@@ -91,9 +91,11 @@ def test_benchmark_fp8_attn_func(D, dtype, device, is_causal):
     if is_causal:
         total_flops //= 2
 
-    tflops_sdpa = total_flops * 1e-12 / (ms_sdpa * 1e-3)
+    tflops_fa = total_flops * 1e-12 / (ms_fa * 1e-3)
+    tflops_cudnn_sdpa = total_flops * 1e-12 / (ms_cudnn_sdpa * 1e-3)
     tflops_fp8_attention = total_flops * 1e-12 / (ms_fp8_attention * 1e-3)
-    print(f"TFLOPS (SDPA): {tflops_sdpa:.2f}")
+    print(f"TFLOPS (Flash Attention): {tflops_fa:.2f}")
+    print(f"TFLOPS (CUDNN SDPA): {tflops_cudnn_sdpa:.2f}")
     print(f"TFLOPS (FP8 Attention): {tflops_fp8_attention:.2f}")
 
 
@@ -120,12 +122,6 @@ def test_benchmark_fp8_attn_func_with_proton(D, dtype, device, is_causal):
             for _ in range(reps):
                 fn(*args)
 
-    def torch_sdpa(query, key, value, is_causal=is_causal):
-        return F.scaled_dot_product_attention(query, key, value, is_causal=is_causal)
-
-    def fp8_attention(query, key, value, is_causal=is_causal):
-        return quantum_attn_interface.fp8_attn_func(query, key, value, is_causal=is_causal)
-
     def bench(reps=1000, warmup_reps=10000):
         B = 2
         H = 8
@@ -136,7 +132,8 @@ def test_benchmark_fp8_attn_func_with_proton(D, dtype, device, is_causal):
         key = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
         value = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
 
-        bench_fn(reps, warmup_reps, torch_sdpa, query, key, value, is_causal)
+        bench_fn(reps, warmup_reps, flash_attention, query, key, value, is_causal)
+        bench_fn(reps, warmup_reps, cudnn_sdpa, query, key, value, is_causal)
         bench_fn(reps, warmup_reps, fp8_attention, query, key, value, is_causal)
 
     def show_profile(profile_name):
