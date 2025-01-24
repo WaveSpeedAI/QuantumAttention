@@ -237,11 +237,10 @@ def _attn_fwd_inner(
                     K_scale_block_ptr,
                     start_m, #
                     v_dtype,
-                    BLOCK_M: tl.constexpr, BLOCK_DMODEL: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+                    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
                     STAGE: tl.constexpr,
                     N_CTX_Q, N_CTX_K,
                     TILES: tl.constexpr,
-                    EVEN_K: tl.constexpr,
                     EVEN_N: tl.constexpr,
 ):
     qk_scale: tl.constexpr = tl.full(
@@ -394,6 +393,10 @@ def _attn_fwd_inner(
 
     start_pid = tl.program_id(0)
 
+    workspace_base = ws_ptr + start_pid * 2 * TMA_SIZE
+    K_desc_ptr = workspace_base
+    V_desc_ptr = workspace_base + TMA_SIZE
+
     num_programs_m = (N_CTX_Q + BLOCK_M - 1) // BLOCK_M
     for pid in range(start_pid, num_programs_m * Z * H, NUM_SMS):
         start_m = pid % num_programs_m
@@ -437,10 +440,6 @@ def _attn_fwd_inner(
             order=(0,),
         )
 
-        workspace_base = ws_ptr + start_pid * 2 * TMA_SIZE
-        K_desc_ptr = workspace_base
-        V_desc_ptr = workspace_base + TMA_SIZE
-
         triton.language.extra.cuda.experimental_device_tensormap_create2d(
             desc_ptr=K_desc_ptr,
             global_address=K + k_offset,
@@ -461,13 +460,10 @@ def _attn_fwd_inner(
 
         q_scale = tl.load(Q_scale_block_ptr, boundary_check=(0,)).to(tl.float32)
 
-        if BLOCK_DMODEL == BLOCK_K:
-            q_0 = tl.load(Q_block_ptr, boundary_check=(0,), padding_option="zero")
-        else:
 {{% for i in range(TILES) %}}
-            q_{{{{i}}}} = tl.load(Q_block_ptr, boundary_check=(0, 1), padding_option="" if EVEN_K else "zero")
+        q_{{{{i}}}} = tl.load(Q_block_ptr, boundary_check=(0,))
 {{% if i + 1 < TILES %}}
-            Q_block_ptr = tl.advance(Q_block_ptr, (0, BLOCK_K))
+        Q_block_ptr = tl.advance(Q_block_ptr, (0, BLOCK_K))
 {{% endif %}}
 {{% endfor %}}
 
@@ -497,10 +493,9 @@ def _attn_fwd_inner(
                                 K_scale_block_ptr,
                                 start_m,
                                 V.dtype.element_ty,
-                                BLOCK_M, BLOCK_DMODEL, BLOCK_N, BLOCK_K,
+                                BLOCK_M, BLOCK_N, BLOCK_K,
                                 4 - STAGE, N_CTX_Q, N_CTX_K,
                                 TILES,
-                                EVEN_K,
                                 EVEN_N,
                                 )
         # stage 2: on-band
@@ -523,10 +518,9 @@ def _attn_fwd_inner(
                                 K_scale_block_ptr,
                                 start_m,
                                 V.dtype.element_ty,
-                                BLOCK_M, BLOCK_DMODEL, BLOCK_N, BLOCK_K,
+                                BLOCK_M, BLOCK_N, BLOCK_K,
                                 2, N_CTX_Q, N_CTX_K,
                                 TILES,
-                                EVEN_K,
                                 EVEN_N,
                                 )
 
