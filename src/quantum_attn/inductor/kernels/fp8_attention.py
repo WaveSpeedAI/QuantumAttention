@@ -710,6 +710,7 @@ def generate_fp8_attention_template_choices(
     value,
     scale_q,
     scale_k,
+    scale_v,
     attn_mask=None,
     dropout_p=0.0,
     is_causal=False,
@@ -731,7 +732,7 @@ def generate_fp8_attention_template_choices(
     m1, n1, k1, layout1, mat1, mat2 = mm_args(query, key_t)
     stage = 3 if is_causal else 1
 
-    args = [query, key, value, scale_q, scale_k]
+    args = [query, key, value, scale_q, scale_k, scale_v]
     if attn_mask is not None:
         args.append(attn_mask)
 
