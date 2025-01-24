@@ -236,6 +236,7 @@ def _attn_fwd_inner(
                     K_desc_ptr, V_desc_ptr,
                     K_scale_block_ptr,
                     start_m, #
+                    v_dtype,
                     BLOCK_M: tl.constexpr, BLOCK_DMODEL: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
                     STAGE: tl.constexpr,
                     N_CTX_Q, N_CTX_K,
@@ -289,7 +290,7 @@ def _attn_fwd_inner(
 
 {{% for i in range(TILES) %}}
         v_{{{{i}}}} = tl._experimental_descriptor_load(
-            V_desc_ptr, (start_n, BLOCK_K * {{{{i}}}}), (BLOCK_N, BLOCK_K), q_0.dtype
+            V_desc_ptr, (start_n, BLOCK_K * {{{{i}}}}), (BLOCK_N, BLOCK_K), v_dtype
         )
 {{% endfor %}}
 
@@ -495,6 +496,7 @@ def _attn_fwd_inner(
                                 l_i, m_i, K_desc_ptr, V_desc_ptr,
                                 K_scale_block_ptr,
                                 start_m,
+                                V.dtype.element_ty,
                                 BLOCK_M, BLOCK_DMODEL, BLOCK_N, BLOCK_K,
                                 4 - STAGE, N_CTX_Q, N_CTX_K,
                                 TILES,
@@ -520,6 +522,7 @@ def _attn_fwd_inner(
                                 l_i, m_i, K_desc_ptr, V_desc_ptr,
                                 K_scale_block_ptr,
                                 start_m,
+                                V.dtype.element_ty,
                                 BLOCK_M, BLOCK_DMODEL, BLOCK_N, BLOCK_K,
                                 2, N_CTX_Q, N_CTX_K,
                                 TILES,
