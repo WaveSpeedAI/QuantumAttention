@@ -84,21 +84,23 @@ def test_benchmark_fp8_attn_func(D, dtype, device, is_causal):
     def fp8_attention_fn():
         fp8_attention(query, key, value, is_causal)
 
-    ms_fa = triton.testing.do_bench(fa_fn)
-    ms_cudnn_sdpa = triton.testing.do_bench(cudnn_sdpa_fn)
-    ms_fp8_attention = triton.testing.do_bench(fp8_attention_fn)
-
     flops_per_matmul = 2 * B * H * S_Q * S_KV * D
     total_flops = 2 * flops_per_matmul
 
     if is_causal:
         total_flops //= 2
 
+    ms_fa = triton.testing.do_bench(fa_fn)
     tflops_fa = total_flops * 1e-12 / (ms_fa * 1e-3)
-    tflops_cudnn_sdpa = total_flops * 1e-12 / (ms_cudnn_sdpa * 1e-3)
-    tflops_fp8_attention = total_flops * 1e-12 / (ms_fp8_attention * 1e-3)
     print(f"TFLOPS (Flash Attention): {tflops_fa:.2f}")
-    print(f"TFLOPS (CUDNN SDPA): {tflops_cudnn_sdpa:.2f}")
+
+    if D <= 128:
+        ms_cudnn_sdpa = triton.testing.do_bench(cudnn_sdpa_fn)
+        tflops_cudnn_sdpa = total_flops * 1e-12 / (ms_cudnn_sdpa * 1e-3)
+        print(f"TFLOPS (CUDNN SDPA): {tflops_cudnn_sdpa:.2f}")
+
+    ms_fp8_attention = triton.testing.do_bench(fp8_attention_fn)
+    tflops_fp8_attention = total_flops * 1e-12 / (ms_fp8_attention * 1e-3)
     print(f"TFLOPS (FP8 Attention): {tflops_fp8_attention:.2f}")
 
 
@@ -136,7 +138,8 @@ def test_benchmark_fp8_attn_func_with_proton(D, dtype, device, is_causal):
         value = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
 
         bench_fn(reps, warmup_reps, flash_attention, query, key, value, is_causal)
-        bench_fn(reps, warmup_reps, cudnn_sdpa, query, key, value, is_causal)
+        if D <= 128:
+            bench_fn(reps, warmup_reps, cudnn_sdpa, query, key, value, is_causal)
         bench_fn(reps, warmup_reps, fp8_attention, query, key, value, is_causal)
 
     def show_profile(profile_name):
