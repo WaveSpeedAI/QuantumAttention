@@ -45,11 +45,25 @@ def _validate_sdpa_input(
     is_causal=False,
     scale=None,
 ):
-    if query.dtype != key.dtype or query.dtype != value.dtype:
+    # if query.dtype != key.dtype or query.dtype != value.dtype:
+    #     raise ValueError(
+    #         f"Expected query, key, and value to have the same dtype, "
+    #         f"but got query.dtype: {query.dtype}, key.dtype: {key.dtype}, "
+    #         f"and value.dtype: {value.dtype} instead."
+    #     )
+    if query.dtype != torch.float8_e4m3fn:
         raise ValueError(
-            f"Expected query, key, and value to have the same dtype, "
-            f"but got query.dtype: {query.dtype}, key.dtype: {key.dtype}, "
-            f"and value.dtype: {value.dtype} instead."
+            f"Expected query to have dtype torch.float8_e4m3fn, " f"but got query.dtype: {query.dtype} instead."
+        )
+    if query.dtype != key.dtype:
+        raise ValueError(
+            f"Expected query and key to have the same dtype, "
+            f"but got query.dtype: {query.dtype}, key.dtype: {key.dtype} instead."
+        )
+    if value.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(
+            f"Expected value to have dtype torch.float16 or torch.bfloat16, "
+            f"but got value.dtype: {value.dtype} instead."
         )
     if query.device != key.device or query.device != value.device:
         raise ValueError(
