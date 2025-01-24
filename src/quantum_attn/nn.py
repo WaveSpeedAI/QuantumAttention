@@ -17,7 +17,7 @@ def _dynamically_quantize_fp8(t: torch.Tensor, *, reduction_dim=-1) -> Tuple[tor
     q_max = torch.finfo(torch.float8_e4m3fn).max
     scale = t.abs().amax(reduction_dim, keepdim=True).mul(1.0 / q_max).clamp_min(eps)
     t_fp8 = (t / scale).clamp(-q_max, q_max).to(torch.float8_e4m3fn)
-    return t_fp8, scale.squeeze(reduction_dim)
+    return t_fp8, scale.squeeze(reduction_dim).to(torch.float32)
 
 
 def dynamically_quantize_fp8(t: torch.Tensor, *, reduction_dim=-1) -> Tuple[torch.Tensor, torch.Tensor]:
