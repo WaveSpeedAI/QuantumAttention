@@ -21,8 +21,8 @@ if not torch.cuda.is_available():
 
 @pytest.mark.parametrize("B", [1])
 @pytest.mark.parametrize("H", [1])
-@pytest.mark.parametrize("S_Q", [32])
-@pytest.mark.parametrize("S_KV", [32])
+@pytest.mark.parametrize("S_Q", [256])
+@pytest.mark.parametrize("S_KV", [256])
 @pytest.mark.parametrize("D", [64])
 @pytest.mark.parametrize("dtype", [torch.float16])
 @pytest.mark.parametrize("device", ["cuda"])
