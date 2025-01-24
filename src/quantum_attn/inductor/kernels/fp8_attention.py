@@ -525,8 +525,9 @@ def _attn_fwd_inner(
                                 )
 
         # epilogue
+        start_m = pid % num_programs_m
         offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
-        off_hz = tl.program_id(1)
+        off_hz = pid // num_programs_m
         off_z = off_hz // H
         off_h = off_hz % H
         # offs_m = offs_m.to(tl.int64)
