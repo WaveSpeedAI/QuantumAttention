@@ -574,11 +574,11 @@ def fp8_attention_heuristic_configs(
         confs = ""
     else:
         if head_dim == 64:
-            confs = "128.128.64.8.1"
+            confs = "128.128.64.8.2"
         elif head_dim == 128:
-            confs = "128.128.128.8.1"
+            confs = "128.128.128.8.2"
         elif head_dim == 256:
-            confs = "128.128.128.8.1"
+            confs = "128.128.128.8.2"
 
     confs = [[int(x) for x in c.split(".")] for c in confs.split() if c]
 
