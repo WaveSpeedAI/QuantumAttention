@@ -54,7 +54,6 @@ def fp8_attention_forward(
     is_causal: bool = False,
     *,
     scale: Optional[float] = None,
-    out_dtype: torch.dtype,
 ) -> torch.Tensor:
     return _fp8_attention_forward(
         query,
@@ -66,7 +65,6 @@ def fp8_attention_forward(
         dropout_p=dropout_p,
         is_causal=is_causal,
         scale=scale,
-        out_dtype=out_dtype,
     )
 
 
