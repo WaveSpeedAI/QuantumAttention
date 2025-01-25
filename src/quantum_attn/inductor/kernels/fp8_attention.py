@@ -776,7 +776,7 @@ def tuned_fp8_attention(
     key_t = ir.PermuteView.create(key, [0, 1, 3, 2])
     m1, n1, k1, layout1, mat1, mat2 = mm_args(query, key_t)
     k1 = V.graph.sizevars.evaluate_static_shape(k1)
-    n2 = V.graph.sizevars.evaluate_static_shape(value.get_size()[-2])
+    n2 = V.graph.sizevars.evaluate_static_shape(value.get_size()[-1])
 
     if scale is None or math.isnan(scale):  # og_scale.as_float_unchecked() could be nan
         scale = float(1.0 / (k1**0.5))
