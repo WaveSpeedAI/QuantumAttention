@@ -7,14 +7,32 @@ if importlib.util.find_spec("setuptools_scm") is None:
 
 import os
 import subprocess
+import sys
 from os import path
 
 from setuptools import find_packages, setup
 from setuptools_scm.version import get_local_dirty_tag
 
+THIS_DIR = path.dirname(path.abspath(__file__))
+
+UPDATE_SUBMODULES = os.environ.get("QUANTUM_ATTN_BUILD_UPDATE_SUBMODULES", "1") == "1"
+
 
 def is_git_directory(path="."):
     return subprocess.call(["git", "-C", path, "status"], stderr=subprocess.STDOUT, stdout=open(os.devnull, "w")) == 0
+
+
+if UPDATE_SUBMODULES:
+    if is_git_directory(THIS_DIR):
+        print("Updating submodules")
+        subprocess.run(
+            ["git", "submodule", "update", "--init", "--recursive"],
+            check=True,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+    else:
+        print("Not a git directory. Skipping submodule update.")
 
 
 def my_local_scheme(version):
