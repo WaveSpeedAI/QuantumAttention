@@ -762,7 +762,7 @@ def tuned_fp8_attention(
     scale=None,
     layout=None,
 ):
-    value_t = ir.PeriodicView.create(value, [0, 1, 3, 2])
+    value_t = ir.PermuteView.create(value, [0, 1, 3, 2])
     query, key, value_t = (ir.ExternKernel.realize_input(x) for x in (query, key, value_t))
     query = require_dense_memory(query, num_dims=1)
     key, value_t = (require_dense_memory(x, num_dims=2) for x in (key, value_t))
