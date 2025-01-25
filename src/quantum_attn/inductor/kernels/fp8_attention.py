@@ -637,8 +637,8 @@ def early_fp8_attention_config_prune(configs, query, key, value, scale_q, scale_
     query_dtype = query.get_dtype()
     key_dtype = key.get_dtype()
     value_dtype = value.get_dtype()
-    scale_q_dtype = scale_q.get_dtype()
-    scale_k_dtype = scale_k.get_dtype()
+    # scale_q_dtype = scale_q.get_dtype()
+    # scale_k_dtype = scale_k.get_dtype()
     device = query.get_device()
 
     assert device.type == "cuda"
@@ -653,7 +653,7 @@ def early_fp8_attention_config_prune(configs, query, key, value, scale_q, scale_
         required_shared_memory = (
             BLOCK_N * num_stages * (key_dtype.itemsize + value_dtype.itemsize) + BLOCK_M * query_dtype.itemsize
         ) * BLOCK_DMODEL
-        required_shared_memory += BLOCK_N * num_stages * scale_k_dtype.itemsize + BLOCK_M * scale_q_dtype.itemsize
+        # required_shared_memory += BLOCK_N * num_stages * scale_k_dtype.itemsize + BLOCK_M * scale_q_dtype.itemsize
         if required_shared_memory <= max_shared_memory:
             filtered_configs.append(c)
     return filtered_configs
