@@ -278,7 +278,7 @@ def _attn_fwd_inner(
 
 {{% for i in range(TILES) %}}
         v_{{{{i}}}} = tl._experimental_descriptor_load(
-            V_desc_ptr, (BLOCK_K * {{{{i}}}}, start_n), (BLOCK_K, BLOCK_N), v_dtype
+            V_desc_ptr, (start_n, BLOCK_K * {{{{i}}}}), (BLOCK_N, BLOCK_K), v_dtype
         )
 {{% endfor %}}
 
@@ -337,7 +337,7 @@ def _attn_fwd_inner(
 
         # -- update output accumulator --
 {{% for i in range(TILES) %}}
-        acc_{{{{i}}}} = dot(p, v_{{{{i}}}}.T, acc_{{{{i}}}})
+        acc_{{{{i}}}} = dot(p, v_{{{{i}}}}, acc_{{{{i}}}})
 {{% endfor %}}
     return (
 {{% for i in range(TILES) %}}
@@ -365,6 +365,8 @@ def _attn_fwd_inner(
 
     stride_vz = {{{{stride("V", 0)}}}}
     stride_vh = {{{{stride("V", 1)}}}}
+    stride_vk = {{{{stride("V", 2)}}}}
+    stride_vn = {{{{stride("V", 3)}}}}
 
     stride_q_scale_z = {{{{stride("Q_scale", 0)}}}}
     stride_q_scale_h = {{{{stride("Q_scale", 1)}}}}
@@ -434,8 +436,8 @@ def _attn_fwd_inner(
             triton.language.extra.cuda.experimental_device_tensormap_create2d(
                 desc_ptr=V_desc_ptr,
                 global_address=V + v_offset,
-                load_size=[BLOCK_K, BLOCK_N],
-                global_size=[D, N_CTX_K],
+                load_size=[BLOCK_N, BLOCK_K],
+                global_size=[N_CTX_K, D],
                 element_ty=V.dtype.element_ty,
             )
 
@@ -672,7 +674,7 @@ def generate_fp8_attention_template_choices(
     choices,
     query,
     key,
-    value_t,
+    value,
     scale_q,
     scale_k,
     attn_mask=None,
@@ -696,7 +698,7 @@ def generate_fp8_attention_template_choices(
     m1, n1, k1, layout1, mat1, mat2 = mm_args(query, key_t)
     stage = 3 if is_causal else 1
 
-    args = [query, key, value_t, scale_q, scale_k]
+    args = [query, key, value, scale_q, scale_k]
     if attn_mask is not None:
         args.append(attn_mask)
 
@@ -715,11 +717,11 @@ def generate_fp8_attention_template_choices(
     )
     triton_configs.extend(heuristic_configs)
 
-    triton_configs = early_fp8_attention_config_prune(triton_configs, query, key, value_t, scale_q, scale_k)
+    triton_configs = early_fp8_attention_config_prune(triton_configs, query, key, value, scale_q, scale_k)
 
     for fa_config in triton_configs:
         mm_options_ = mm_options(fa_config, m1, n1, k1, layout1)
-        mm_options_["ACC_TYPE"] = acc_type(value_t.get_dtype())
+        mm_options_["ACC_TYPE"] = acc_type(value.get_dtype())
         fast_softmax = not dynamic and mm_options_["BLOCK_N"] >= N_CTX_K
         even_n_symbolic = (
             # it isn't worth guarding on this
@@ -762,20 +764,19 @@ def tuned_fp8_attention(
     scale=None,
     layout=None,
 ):
-    value_t = ir.PermuteView.create(value, [0, 1, 3, 2])
-    query, key, value_t = (ir.ExternKernel.realize_input(x) for x in (query, key, value_t))
+    query, key, value = (ir.ExternKernel.realize_input(x) for x in (query, key, value))
     query = require_dense_memory(query, num_dims=1)
-    key, value_t = (require_dense_memory(x, num_dims=2) for x in (key, value_t))
+    key, value = (require_dense_memory(x, num_dims=2) for x in (key, value))
 
     scale_q, scale_k = (ir.ExternKernel.realize_input(x) for x in (scale_q, scale_k))
     scale_q, scale_k = (require_dense_memory(x, num_dims=1) for x in (scale_q, scale_k))
-    for x in (query, key, value_t, scale_q, scale_k, attn_mask):
+    for x in (query, key, value, scale_q, scale_k, attn_mask):
         if x is not None:
             x.freeze_layout()
     key_t = ir.PermuteView.create(key, [0, 1, 3, 2])
     m1, n1, k1, layout1, mat1, mat2 = mm_args(query, key_t)
     k1 = V.graph.sizevars.evaluate_static_shape(k1)
-    n2 = V.graph.sizevars.evaluate_static_shape(value_t.get_size()[-2])
+    n2 = V.graph.sizevars.evaluate_static_shape(value.get_size()[-2])
 
     if scale is None or math.isnan(scale):  # og_scale.as_float_unchecked() could be nan
         scale = float(1.0 / (k1**0.5))
@@ -792,17 +793,17 @@ def tuned_fp8_attention(
     ]
 
     if attn_mask is None:
-        args = [query, key, value_t]
+        args = [query, key, value]
         args += [scale_q, scale_k]
         kwargs["attn_mask"] = None
         ordered_kwargs_for_cpp_kernel.insert(0, "attn_mask")
     else:
-        args = [query, key, value_t]
+        args = [query, key, value]
         args += [scale_q, scale_k]
         args.append(attn_mask)
 
     if layout is None:
-        layout2 = get_fp8_attention_layout(query, value_t.get_dtype())
+        layout2 = get_fp8_attention_layout(query, value.get_dtype())
     else:
         layout2 = layout
 
