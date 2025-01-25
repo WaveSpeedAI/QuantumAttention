@@ -278,7 +278,7 @@ def _attn_fwd_inner(
 
 {{% for i in range(TILES) %}}
         v_{{{{i}}}} = tl._experimental_descriptor_load(
-            V_desc_ptr, (start_n, BLOCK_K * {{{{i}}}}), (BLOCK_N, BLOCK_K), v_dtype
+            V_desc_ptr, (BLOCK_K * {{{{i}}}}, start_n), (BLOCK_K, BLOCK_N), v_dtype
         )
 {{% endfor %}}
 
