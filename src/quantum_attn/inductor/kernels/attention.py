@@ -31,13 +31,13 @@ from .mm_common import acc_type, get_device_shared_memory, mm_options, reduce_bl
 quantum_attn_ops = torch.ops.quantum_attn
 
 
-def fp8_attention_grid(b, h, s, d, meta):
+def persistent_attention_grid(b, h, s, d, meta):
     return (min(meta["NUM_SMS"], cdiv(s, meta["BLOCK_M"]) * b * h), 1, 1)
 
 
-fp8_attention_forward_template = TritonTemplate(
-    name="quantum_attn_fp8_attention_forward",
-    grid=fp8_attention_grid,
+attention_forward_template = TritonTemplate(
+    name="quantum_attn_attention_forward",
+    grid=persistent_attention_grid,
     source=rf"""
 import triton
 import triton.language as tl
@@ -240,6 +240,7 @@ def _attn_fwd_inner(
                     N_CTX_Q, N_CTX_K,
                     TILES: tl.constexpr,
                     EVEN_N: tl.constexpr,
+                    QK_ACC_TYPE,
 ):
     # range of values handled by this stage
     if STAGE == 1:
@@ -258,37 +259,36 @@ def _attn_fwd_inner(
     else:
         lo, hi = 0, N_CTX_K
 
+{{% if IS_QUANTIZED %}}
     K_scale_block_ptr = tl.advance(K_scale_block_ptr, (lo,))
+{{% endif %}}
 
     # loop over k, v and update accumulator
     for start_n in range(lo, hi, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
 
-        k_scale = tl.load(K_scale_block_ptr, boundary_check=(0,)).to(tl.float32)
-        K_scale_block_ptr = tl.advance(K_scale_block_ptr, (BLOCK_N,))
-
         # -- compute qk ----
-        qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+        qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=QK_ACC_TYPE)
 {{% for i in range(TILES) %}}
         k = tl._experimental_descriptor_load(
             K_desc_ptr, (start_n, BLOCK_K * {{{{i}}}}), (BLOCK_N, BLOCK_K), q_0.dtype
         )
-        qk = dot(q_{{{{i}}}}, k.T, qk)
-{{% endfor %}}
-
-{{% for i in range(TILES) %}}
         v_{{{{i}}}} = tl._experimental_descriptor_load(
             V_desc_ptr, (start_n, BLOCK_K * {{{{i}}}}), (BLOCK_N, BLOCK_K), v_dtype
         )
+        qk = dot(q_{{{{i}}}}, k.T, qk)
 {{% endfor %}}
 
-{{% if NUM_STAGES > 1 %}}
-        tl.debug_barrier()
-{{% endif %}}
+{{% if IS_QUANTIZED %}}
+        k_scale = tl.load(K_scale_block_ptr, boundary_check=(0,)).to(tl.float32)
+        K_scale_block_ptr = tl.advance(K_scale_block_ptr, (BLOCK_N,))
 
         qk = qk * q_scale[:, None] * k_scale[None, :]
 {{% if USE_FP16_COMPUTE %}}
         qk = qk.to(tl.float16)
+{{% endif %}}
+{{% else %}}
+        qk = mul(qk, tl.full([1], {{{{SM_SCALE}}}} * 1.44269504, dtype=qk.dtype))
 {{% endif %}}
 
         if EVEN_N:
@@ -346,7 +346,11 @@ def _attn_fwd_inner(
         l_i, m_i,
     )
 
+{{% if IS_QUANTIZED %}}
 {{{{def_kernel("Q", "K", "V", "Q_scale", "K_scale")}}}}
+{{% else %}}
+{{{{def_kernel("Q", "K", "V")}}}}
+{{% endif %}}
     Z = {{{{size("Q", 0)}}}}
     H = {{{{size("Q", 1)}}}}
     N_CTX_Q = {{{{size("Q", 2)}}}}
@@ -368,6 +372,7 @@ def _attn_fwd_inner(
     stride_vk = {{{{stride("V", 2)}}}}
     stride_vn = {{{{stride("V", 3)}}}}
 
+{{% if IS_QUANTIZED %}}
     stride_q_scale_z = {{{{stride("Q_scale", 0)}}}}
     stride_q_scale_h = {{{{stride("Q_scale", 1)}}}}
     stride_q_scale_m = {{{{stride("Q_scale", 2)}}}}
@@ -375,6 +380,7 @@ def _attn_fwd_inner(
     stride_k_scale_z = {{{{stride("K_scale", 0)}}}}
     stride_k_scale_h = {{{{stride("K_scale", 1)}}}}
     stride_k_scale_m = {{{{stride("K_scale", 2)}}}}
+{{% endif %}}
 
     start_pid = tl.program_id(0)
 
@@ -391,9 +397,6 @@ def _attn_fwd_inner(
         # off_z = off_z.to(tl.int64)
         # off_h = off_h.to(tl.int64)
 
-        q_scale_offset = off_z * stride_q_scale_z + off_h * stride_q_scale_h
-        k_scale_offset = off_z * stride_k_scale_z + off_h * stride_k_scale_h
-
         q_offset = off_z * stride_qz + off_h * stride_qh
         k_offset = off_z * stride_kz + off_h * stride_kh
         v_offset = off_z * stride_vz + off_h * stride_vh
@@ -408,6 +411,11 @@ def _attn_fwd_inner(
             block_shape=(BLOCK_M, BLOCK_K),
             order=(1, 0),
         )
+
+{{% if IS_QUANTIZED %}}
+        q_scale_offset = off_z * stride_q_scale_z + off_h * stride_q_scale_h
+        k_scale_offset = off_z * stride_k_scale_z + off_h * stride_k_scale_h
+
         Q_scale_block_ptr = tl.make_block_ptr(
             base=Q_scale + q_scale_offset,
             shape=(N_CTX_Q,),
@@ -424,6 +432,9 @@ def _attn_fwd_inner(
             block_shape=(BLOCK_N,),
             order=(0,),
         )
+{{% else %}}
+        K_scale_block_ptr = None
+{{% endif %}}
 
         if start_m < NUM_SMS:
             triton.language.extra.cuda.experimental_device_tensormap_create2d(
@@ -444,8 +455,12 @@ def _attn_fwd_inner(
             tl.extra.cuda.experimental_tensormap_fenceproxy_acquire(K_desc_ptr)
             tl.extra.cuda.experimental_tensormap_fenceproxy_acquire(V_desc_ptr)
 
+{{% if IS_QUANTIZED %}}
         q_scale = tl.load(Q_scale_block_ptr, boundary_check=(0,)).to(tl.float32)
         q_scale = q_scale * ({{{{SM_SCALE * 1.44269504}}}})
+{{% else %}}
+        q_scale = None
+{{% endif %}}
 
 {{% for i in range(TILES) %}}
         q_{{{{i}}}} = tl.load(Q_block_ptr, boundary_check=(0,))
@@ -484,6 +499,7 @@ def _attn_fwd_inner(
                                 4 - STAGE, N_CTX_Q, N_CTX_K,
                                 TILES,
                                 EVEN_N,
+                                QK_ACC_TYPE,
                                 )
         # stage 2: on-band
         if STAGE & 2:
@@ -509,6 +525,7 @@ def _attn_fwd_inner(
                                 2, N_CTX_Q, N_CTX_K,
                                 TILES,
                                 EVEN_N,
+                                QK_ACC_TYPE,
                                 )
 
         # epilogue
@@ -541,7 +558,7 @@ def _attn_fwd_inner(
 )
 
 
-def fp8_attention_heuristic_configs(
+def attention_heuristic_configs(
     head_dim,
     B,
     H,
@@ -560,11 +577,11 @@ def fp8_attention_heuristic_configs(
         confs = ""
     else:
         if head_dim == 64:
-            confs = "128.128.64.8.2"
+            confs = "128.128.64.8.4 128.128.64.8.3 128.128.64.8.2 256.128.64.8.4 256.128.64.8.3 256.128.64.8.2"
         elif head_dim == 128:
-            confs = "128.128.128.8.2"
+            confs = "128.128.128.8.3 128.128.128.8.2 128.128.64.8.3 128.128.64.8.2"
         elif head_dim == 256:
-            confs = "128.128.128.8.2"
+            confs = "128.64.128.8.3 128.64.64.8.3 128.64.128.8.2 128.64.64.8.2"
 
     confs = [[int(x) for x in c.split(".")] for c in confs.split() if c]
 
@@ -633,12 +650,10 @@ def fp8_attention_heuristic_configs(
     return configs
 
 
-def early_fp8_attention_config_prune(configs, query, key, value, scale_q, scale_k):
+def early_attention_config_prune(configs, query, key, value):
     query_dtype = query.get_dtype()
     key_dtype = key.get_dtype()
     value_dtype = value.get_dtype()
-    # scale_q_dtype = scale_q.get_dtype()
-    # scale_k_dtype = scale_k.get_dtype()
     device = query.get_device()
 
     assert device.type == "cuda"
@@ -653,13 +668,12 @@ def early_fp8_attention_config_prune(configs, query, key, value, scale_q, scale_
         required_shared_memory = (
             BLOCK_N * num_stages * (key_dtype.itemsize + value_dtype.itemsize) + BLOCK_M * query_dtype.itemsize
         ) * BLOCK_DMODEL
-        # required_shared_memory += BLOCK_N * num_stages * scale_k_dtype.itemsize + BLOCK_M * scale_q_dtype.itemsize
         if required_shared_memory <= max_shared_memory:
             filtered_configs.append(c)
     return filtered_configs
 
 
-def get_fp8_attention_layout(
+def get_attention_layout(
     query,
     dtype,
 ):
@@ -670,13 +684,13 @@ def get_fp8_attention_layout(
     )
 
 
-def generate_fp8_attention_template_choices(
+def generate_attention_template_choices(
     choices,
     query,
     key,
     value,
-    scale_q,
-    scale_k,
+    scale_q=None,
+    scale_k=None,
     attn_mask=None,
     dropout_p=0.0,
     is_causal=False,
@@ -698,14 +712,16 @@ def generate_fp8_attention_template_choices(
     m1, n1, k1, layout1, mat1, mat2 = mm_args(query, key_t)
     stage = 3 if is_causal else 1
 
-    args = [query, key, value, scale_q, scale_k]
+    args = [query, key, value]
+    if scale_q is not None:
+        args += [scale_q, scale_k]
     if attn_mask is not None:
         args.append(attn_mask)
 
     dynamic = is_dynamic(*args)
 
     triton_configs = []
-    heuristic_configs = fp8_attention_heuristic_configs(
+    heuristic_configs = attention_heuristic_configs(
         Lq,
         B,
         H,
@@ -717,11 +733,15 @@ def generate_fp8_attention_template_choices(
     )
     triton_configs.extend(heuristic_configs)
 
-    triton_configs = early_fp8_attention_config_prune(triton_configs, query, key, value, scale_q, scale_k)
+    triton_configs = early_attention_config_prune(triton_configs, query, key, value)
 
     for fa_config in triton_configs:
         mm_options_ = mm_options(fa_config, m1, n1, k1, layout1)
         mm_options_["ACC_TYPE"] = acc_type(value.get_dtype())
+        if scale_q is None:
+            mm_options_["QK_ACC_TYPE"] = acc_type(value.get_dtype())
+        else:
+            mm_options_["QK_ACC_TYPE"] = "tl.float32"
         fast_softmax = not dynamic and mm_options_["BLOCK_N"] >= N_CTX_K
         even_n_symbolic = (
             # it isn't worth guarding on this
@@ -729,7 +749,7 @@ def generate_fp8_attention_template_choices(
             == mm_options_["BLOCK_N"]
         )
 
-        fp8_attention_forward_template.maybe_append_choice(
+        attention_forward_template.maybe_append_choice(
             choices,
             input_nodes=args,
             layout=layout2,
@@ -746,30 +766,33 @@ def generate_fp8_attention_template_choices(
             USE_FP16_COMPUTE=mm_options_["ACC_TYPE"] == "tl.float16",
             TMA_SIZE=TMA_DESCRIPTOR_SIZE,
             NUM_SMS=get_num_sms(),
+            IS_QUANTIZED=scale_q is not None,
             **mm_options_,
         )
 
 
-@register_lowering(quantum_attn_ops.fp8_attention_forward.default, type_promotion_kind=None)
-def tuned_fp8_attention(
+@register_lowering(quantum_attn_ops.attention_forward.default, type_promotion_kind=None)
+def tuned_attention_forward(
     query,
     key,
     value,
-    scale_q,
-    scale_k,
     attn_mask=None,
     dropout_p=0.0,
     is_causal=False,
     *,
     scale=None,
     layout=None,
+    scale_q=None,
+    scale_k=None,
 ):
+    assert (scale_q is None) == (scale_k is None)
     query, key, value = (ir.ExternKernel.realize_input(x) for x in (query, key, value))
     query = require_dense_memory(query, num_dims=1)
     key, value = (require_dense_memory(x, num_dims=2) for x in (key, value))
 
-    scale_q, scale_k = (ir.ExternKernel.realize_input(x) for x in (scale_q, scale_k))
-    scale_q, scale_k = (require_dense_memory(x, num_dims=1) for x in (scale_q, scale_k))
+    if scale_q is not None:
+        scale_q, scale_k = (ir.ExternKernel.realize_input(x) for x in (scale_q, scale_k))
+        scale_q, scale_k = (require_dense_memory(x, num_dims=1) for x in (scale_q, scale_k))
     for x in (query, key, value, scale_q, scale_k, attn_mask):
         if x is not None:
             x.freeze_layout()
@@ -794,16 +817,18 @@ def tuned_fp8_attention(
 
     if attn_mask is None:
         args = [query, key, value]
-        args += [scale_q, scale_k]
+        if scale_q is not None:
+            args += [scale_q, scale_k]
         kwargs["attn_mask"] = None
         ordered_kwargs_for_cpp_kernel.insert(0, "attn_mask")
     else:
         args = [query, key, value]
-        args += [scale_q, scale_k]
+        if scale_q is not None:
+            args += [scale_q, scale_k]
         args.append(attn_mask)
 
     if layout is None:
-        layout2 = get_fp8_attention_layout(query, value.get_dtype())
+        layout2 = get_attention_layout(query, value.get_dtype())
     else:
         layout2 = layout
 
@@ -816,9 +841,37 @@ def tuned_fp8_attention(
         and k1 <= 256
         and k1 % 8 == 0
     ):
-        generate_fp8_attention_template_choices(
+        generate_attention_template_choices(
             choices, *args, layout2=layout2, enable_max_autotune=use_max_autotune(), **kwargs
         )
     if not use_max_autotune():
         choices = choices[:1]
-    return autotune_select_algorithm("quantum_attn_fp8_attention_forward", choices, args, layout2)
+    return autotune_select_algorithm("quantum_attn_attention_forward", choices, args, layout2)
+
+
+@register_lowering(quantum_attn_ops.fp8_attention_forward.default, type_promotion_kind=None)
+def tuned_attention_forward(
+    query,
+    key,
+    value,
+    scale_q,
+    scale_k,
+    attn_mask=None,
+    dropout_p=0.0,
+    is_causal=False,
+    *,
+    scale=None,
+    layout=None,
+):
+    return tuned_attention_forward(
+        query,
+        key,
+        value,
+        attn_mask,
+        dropout_p,
+        is_causal,
+        scale=scale,
+        layout=layout,
+        scale_q=scale_q,
+        scale_k=scale_k,
+    )

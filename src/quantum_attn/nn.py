@@ -36,6 +36,14 @@ def dynamically_quantize_fp8(t: torch.Tensor, *, reduction_dim=-1) -> Tuple[torc
                 return out
 
 
+_SUPPORTED_HEAD_DIMS = [64, 128, 256]
+
+
+def _supported_head_dim(n: Union[int, torch.SymInt]) -> bool:
+    """Returns true if the head dim is supported by FlexAttention"""
+    return n in _SUPPORTED_HEAD_DIMS
+
+
 def _validate_sdpa_input(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -44,18 +52,45 @@ def _validate_sdpa_input(
     dropout_p=0.0,
     is_causal=False,
     scale=None,
+    scale_q=None,
+    scale_k=None,
 ):
-    # if query.dtype != key.dtype or query.dtype != value.dtype:
-    #     raise ValueError(
-    #         f"Expected query, key, and value to have the same dtype, "
-    #         f"but got query.dtype: {query.dtype}, key.dtype: {key.dtype}, "
-    #         f"and value.dtype: {value.dtype} instead."
-    #     )
-    if query.dtype not in (torch.float16, torch.bfloat16, torch.float8_e4m3fn):
-        raise ValueError(
-            f"Expected query to have dtype torch.float16, torch.bfloat16, or torch.float8_e4m3fn, "
-            f"but got query.dtype: {query.dtype} instead."
-        )
+    if attn_mask is not None:
+        raise ValueError("NYI: attn_mask must be None")
+    if dropout_p != 0.0:
+        raise ValueError("NYI: dropout_p must be 0.0")
+    if scale_q is None:
+        if scale_k is not None:
+            raise ValueError("scale_k must be None if scale_q is None")
+        if query.dtype != key.dtype or query.dtype != value.dtype:
+            raise ValueError(
+                f"Expected query, key, and value to have the same dtype, "
+                f"but got query.dtype: {query.dtype}, key.dtype: {key.dtype}, "
+                f"and value.dtype: {value.dtype} instead."
+            )
+        if query.dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(
+                f"Expected query, key, and value to have dtype torch.float16 or torch.bfloat16, "
+                f"but got query.dtype: {query.dtype} instead."
+            )
+    else:
+        if scale_k is None:
+            raise ValueError("scale_q must be None if scale_k is None")
+        if query.dtype != torch.float8_e4m3fn:
+            raise ValueError(
+                f"Expected query to have dtype torch.float8_e4m3fn, "
+                f"but got query.dtype: {query.dtype} instead."
+            )
+        if scale_q.shape != query.shape[:-1]:
+            raise ValueError(
+                f"Expected scale_q to have shape equal to query.shape[:-1], "
+                f"but got scale_q.shape: {scale_q.shape}, query.shape: {query.shape} instead."
+            )
+        if scale_k.shape != key.shape[:-1]:
+            raise ValueError(
+                f"Expected scale_k to have shape equal to key.shape[:-1], "
+                f"but got scale_k.shape: {scale_k.shape}, key.shape: {key.shape} instead."
+            )
     if query.dtype != key.dtype:
         raise ValueError(
             f"Expected query and key to have the same dtype, "
@@ -72,28 +107,21 @@ def _validate_sdpa_input(
             f"but got query.device: {query.device}, key.device: {key.device}, "
             f"and value.device: {value.device} instead."
         )
-    if query.dim() < 2 or key.dim() < 2 or value.dim() < 2:
-        raise ValueError(
-            f"Expected query, key, and value to all be  at least 2 dimensional, but got query.dim: "
-            f"{query.dim()}, key.dim: {key.dim()} and value.dim: {value.dim()} instead."
-        )
-
-    if query.dtype not in (torch.float16, torch.bfloat16, torch.float8_e4m3fn):
-        raise ValueError(
-            f"Expected query, key, and value to have dtype torch.float16, torch.bfloat16, or torch.float8_e4m3fn, "
-            f"but got query.dtype: {query.dtype} instead."
-        )
-
     if query.device.type != "cuda":
         raise ValueError("Expected query, key, and value to be on a CUDA device")
+    if query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
+        raise ValueError("NYI: query, key, and value must be 4D tensors")
+    if value.size(-1) != query.size(-1):
+        return False, "NYI: query and value must have the same embedding dimension"
+    if query.size(-3) != key.size(-3):
+        return False, (
+            f"Expect query and key/value to have the same number of heads "
+            f"but got Hq={query.size(-3)} and Hkv={key.size(-3)}. "
+            f"Try setting enable_gqa=True for GQA."
+        )
 
-
-_SUPPORTED_HEAD_DIMS = [64, 128, 256]
-
-
-def _supported_head_dim(n: Union[int, torch.SymInt]) -> bool:
-    """Returns true if the head dim is supported by FlexAttention"""
-    return n in _SUPPORTED_HEAD_DIMS
+    if not _supported_head_dim(query.size(-1)):
+        return False, f"Unsupported head dimension: {query.size(-1)}"
 
 
 def can_use_fp8_attention_forward(
@@ -115,38 +143,87 @@ def can_use_fp8_attention_forward(
     if not checks.has_triton_tma_support():
         return False, "Triton TMA support is required"
 
-    if attn_mask is not None:
-        return False, "NYI: attn_mask must be None"
-    if dropout_p != 0.0:
-        return False, "NYI: dropout_p must be 0.0"
-
     try:
         _validate_sdpa_input(query, key, value, attn_mask, dropout_p, is_causal, scale)
     except ValueError as e:
         return False, str(e)
 
-    if query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
-        return False, "NYI: query, key, and value must be 4D tensors"
-    if query.size(-3) != key.size(-3):
-        return False, (
-            f"Expect query and key/value to have the same number of heads "
-            f"but got Hq={query.size(-3)} and Hkv={key.size(-3)}. "
-            f"Try setting enable_gqa=True for GQA."
-        )
-
-    if not (_supported_head_dim(query.size(-1)) and _supported_head_dim(value.size(-1))):
-        raise ValueError(
-            f"NYI: Currently non power of 2 embedding dimension are not supported. "
-            f"Got E={query.size(-1)} and Ev={value.size(-1)}."
-        )
-
-    if value.size(-1) != query.size(-1):
-        return False, "NYI: query and value must have the same embedding dimension"
-
     return True, ""
 
 
-def _fp8_attention_wrapper(
+def _attention_forward_wrapper(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: Optional[torch.Tensor] = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    *,
+    scale: Optional[float] = None,
+) -> Tensor:
+    return quantum_attn_ops.attention_forward(
+        query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
+    )
+
+
+def attention_forward(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: Optional[torch.Tensor] = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    *,
+    scale: Optional[float] = None,
+) -> Tensor:
+    supported, reason = can_use_fp8_attention_forward(
+        query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
+    )
+    if not supported:
+        raise ValueError(reason)
+
+    if scale is None:
+        scale = 1.0 / math.sqrt(query.size(-1))
+
+    if torch.compiler.is_dynamo_compiling():
+        # mark head_dim and number of heads to be static
+        for x in [query, key, value]:
+            torch._dynamo.mark_static(x, -3)
+            torch._dynamo.mark_static(x, -1)
+        out = _attention_forward_wrapper(
+            query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
+        )
+        return out
+
+    if config.attention.force_eager_fallback:
+        out = _attention_forward_wrapper(
+            query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
+        )
+        return out
+
+    if not torch._dynamo.is_dynamo_supported():
+        raise RuntimeError("attention_forward requires dynamo support")
+    if not torch._dynamo.is_inductor_supported():
+        raise RuntimeError("attention_forward requires inductor support")
+
+    with _set_compilation_env():
+        with torch._dynamo.utils.disable_cache_limit():
+            with _temp_remove_pre_dispatch_torch_function_mode():
+                out = torch.compile(
+                    _attention_forward_wrapper, backend="inductor", fullgraph=True, dynamic=config.dynamo.dynamic, mode=config.dynamo.mode
+                )(
+                    query,
+                    key,
+                    value,
+                    attn_mask=attn_mask,
+                    dropout_p=dropout_p,
+                    is_causal=is_causal,
+                    scale=scale,
+                )
+                return out
+
+
+def _fp8_attention_forward_wrapper(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -204,7 +281,7 @@ def fp8_attention_forward(
         for x in [query, key, value]:
             torch._dynamo.mark_static(x, -3)
             torch._dynamo.mark_static(x, -1)
-        out = _fp8_attention_wrapper(
+        out = _fp8_attention_forward_wrapper(
             query,
             key,
             value,
@@ -218,7 +295,7 @@ def fp8_attention_forward(
         return out
 
     if config.attention.force_eager_fallback:
-        out = _fp8_attention_wrapper(
+        out = _fp8_attention_forward_wrapper(
             query,
             key,
             value,
@@ -240,7 +317,7 @@ def fp8_attention_forward(
         with torch._dynamo.utils.disable_cache_limit():
             with _temp_remove_pre_dispatch_torch_function_mode():
                 out = torch.compile(
-                    _fp8_attention_wrapper, backend="inductor", fullgraph=True, dynamic=config.dynamo.dynamic
+                    _fp8_attention_forward_wrapper, backend="inductor", fullgraph=True, dynamic=config.dynamo.dynamic, mode=config.dynamo.mode
                 )(
                     query,
                     key,
