@@ -1,8 +1,10 @@
-# from torch._inductor.codegen.cuda.cuda_kernel import CUDATemplateKernel
-# from torch._inductor.codegen.cuda.cuda_template import CUDATemplate
+import functools
+import os
+from torch.utils.cpp_extension import load_inline
+from . import tk_utils
 
-TK_FP8_ATTENTION_TEMPLATE = """
-#include <kittens.cuh>
+TK_ATTENTION_SOURCE = """
+#include "kittens.cuh"
 #include <cooperative_groups.h>
 #include <iostream>
 
@@ -28,21 +30,18 @@ template<> struct fwd_attend_ker_tile_dims<128> {
     constexpr static int stages     = (2);
 };
 
-template<int D, typename Element> struct fwd_globals {
+template<int D> struct fwd_globals {
     using q_tile    =         st_bf<fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::tile_width>;
     using k_tile    =         st_bf<fwd_attend_ker_tile_dims<D>::kv_height, fwd_attend_ker_tile_dims<D>::tile_width>;
     using v_tile    =         st_bf<fwd_attend_ker_tile_dims<D>::kv_height, fwd_attend_ker_tile_dims<D>::tile_width>;
+    using l_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::tile_width>>;
     using o_tile    =         st_bf<fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::tile_width>;
 
-    using q_gl = gl<fp8e4m3,  -1, -1, -1, -1, q_tile>;
-    using k_gl = gl<fp8e4m3,  -1, -1, -1, -1, k_tile>;
-    using v_gl = gl<Element,  -1, -1, -1, -1, v_tile>;
-    using o_gl = gl<Element,  -1, -1, -1, -1, o_tile>;
-
-    using scale_q_vec = sv<float, q_tile::rows>
-    using scale_k_vec = sv<float, k_tile::rows>
-
-    using scale_q_gl = gl<float, -1, -1, -1, -1, scale_q_vec>;
+    using q_gl = gl<bf16,  -1, -1, -1, -1, q_tile>;
+    using k_gl = gl<bf16,  -1, -1, -1, -1, k_tile>;
+    using v_gl = gl<bf16,  -1, -1, -1, -1, v_tile>;
+    using l_gl = gl<float, -1, -1, -1, -1, l_col_vec>;
+    using o_gl = gl<bf16,  -1, -1, -1, -1, o_tile>;
 
     q_gl q;
     k_gl k;
@@ -50,7 +49,7 @@ template<int D, typename Element> struct fwd_globals {
     l_gl l;
     o_gl o;
 
-    const int N;
+    const int N; 
     const int hr;
 };
 
@@ -75,7 +74,7 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     l_col_vec (&l_smem)[CONSUMER_WARPGROUPS] = al.allocate<l_col_vec, CONSUMER_WARPGROUPS>();
     auto      (*o_smem)                      = reinterpret_cast<o_tile(*)>(q_smem);
 
-    int kv_blocks   = g.N / (K::kv_height);
+    int kv_blocks   = (g.N + K::kv_height - 1) / (K::kv_height);
     int kv_head_idx = blockIdx.y / g.hr;
     int seq_idx     = blockIdx.x * CONSUMER_WARPGROUPS;
 
@@ -163,11 +162,10 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
             warpgroup::mma_async_wait();
 
             if constexpr (is_causal) {
-                const int q_blk = (seq_idx * (K::qo_height/kittens::TILE_ROW_DIM<bf16>)) + warpid;
-                      int k_blk = (kv_idx * (K::kv_height/kittens::TILE_ROW_DIM<bf16>));
+                if (kv_idx == kv_iters-1 || kv_idx == kv_iters) {
+                    const int q_blk = (seq_idx * (K::qo_height/kittens::TILE_ROW_DIM<bf16>)) + warpid;
+                        int k_blk = (kv_idx * (K::kv_height/kittens::TILE_ROW_DIM<bf16>));
 
-                #pragma unroll
-                for(int _ = 0; k_blk == (kv_iters-1)*(K::kv_height/kittens::TILE_ROW_DIM<bf16>) || k_blk == (kv_iters)*(K::kv_height/kittens::TILE_ROW_DIM<bf16>); k_blk+=10000) {
                     #pragma unroll
                     for (auto j = 0; j < (K::kv_height/kittens::TILE_ROW_DIM<bf16>); j++) {
                         auto k_idx = k_blk + j;
@@ -175,6 +173,22 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
                         if      (k_idx >  q_blk) { neg_infty  (attn_subtile); }
                         else if (k_idx == q_blk) { make_causal(attn_subtile, attn_subtile, kittens::base_types::constants<float>::neg_infty()); }
+                        __syncwarp();
+                    }
+                }
+            }
+            else {
+                if (kv_idx == kv_iters && g.N % K::kv_height != 0) {
+                    const int k_end = (g.N % K::kv_height) / kittens::TILE_ROW_DIM<bf16>;
+                    const int k_rem = (g.N % K::kv_height) % kittens::TILE_ROW_DIM<bf16>;
+
+                    #pragma unroll
+                    for (auto j = 0; j < (K::kv_height/kittens::TILE_ROW_DIM<bf16>); j++) {
+                        auto k_idx = j;
+                        auto &attn_subtile = reinterpret_cast<rt_fl<16, 16>&>(att_block.tiles[0][j]);
+
+                        if      (k_idx >  k_end) { neg_infty  (attn_subtile); }
+                        else if (k_idx == k_end) { right_fill (attn_subtile, attn_subtile, kittens::TILE_ROW_DIM<bf16>-k_rem, kittens::base_types::constants<float>::neg_infty()); }
                         __syncwarp();
                     }
                 }
@@ -247,6 +261,13 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
     CHECK_INPUT(k);
     CHECK_INPUT(v);
 
+    TORCH_CHECK(q.device() == k.device(), "Q and K tensors must be on the same device");
+    TORCH_CHECK(q.device() == v.device(), "Q and V tensors must be on the same device");
+
+    TORCH_CHECK(q.dim() == 4, "Q tensor must have 4 dimensions");
+    TORCH_CHECK(k.dim() == 4, "K tensor must have 4 dimensions");
+    TORCH_CHECK(v.dim() == 4, "V tensor must have 4 dimensions");
+
     auto batch    = q.size(0);
     auto seq_len  = q.size(2);
     auto head_dim = q.size(3);
@@ -273,6 +294,8 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
     TORCH_CHECK(k.size(1) == kv_heads, "KV head dimension - idx 1 - must match for all inputs");
     TORCH_CHECK(v.size(1) == kv_heads, "KV head dimension - idx 1 - must match for all inputs");
 
+    torch::DeviceGuard device_guard(q.device());
+
     auto hr = qo_heads / kv_heads;
 
     c10::BFloat16* q_ptr = q.data_ptr<c10::BFloat16>();
@@ -287,7 +310,7 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
     torch::Tensor o     = torch::empty({static_cast<const uint>(batch),
                                         static_cast<const uint>(qo_heads),
                                         static_cast<const uint>(seq_len),
-                                        static_cast<const uint>(head_dim)}, v.options());
+                                        static_cast<const uint>(head_dim)}, v.options().memory_format(at::MemoryFormat::Contiguous));
 
     torch::Tensor l_vec = torch::empty({static_cast<const uint>(batch),
                                         static_cast<const uint>(qo_heads),
@@ -331,7 +354,9 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
         auto threads  = NUM_WORKERS * kittens::WARP_THREADS;
 
         // TORCH_CHECK(seq_len % (CONSUMER_WARPGROUPS*kittens::TILE_DIM*4) == 0, "sequence length must be divisible by 192");
-        dim3 grid(seq_len/(CONSUMER_WARPGROUPS*kittens::TILE_ROW_DIM<bf16>*4), qo_heads, batch);
+        constexpr int block_size_m = CONSUMER_WARPGROUPS*kittens::TILE_ROW_DIM<bf16>*4;
+        int num_m_blocks = (seq_len + block_size_m - 1) / block_size_m;
+        dim3 grid(num_m_blocks, qo_heads, batch);
 
         if (is_causal) {
             cudaFuncSetAttribute(
@@ -351,7 +376,6 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
 
             fwd_attend_ker<64, false><<<grid, (32*NUM_WORKERS), mem_size, stream>>>(g);
         }
-        CHECK_CUDA_ERROR(cudaGetLastError());
     }
 
     if (head_dim == 128) {
@@ -381,7 +405,9 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
         auto threads  = NUM_WORKERS * kittens::WARP_THREADS;
 
         // TORCH_CHECK(seq_len % (CONSUMER_WARPGROUPS*kittens::TILE_DIM*4) == 0, "sequence length must be divisible by 192");
-        dim3 grid(seq_len/(CONSUMER_WARPGROUPS*kittens::TILE_ROW_DIM<bf16>*4), qo_heads, batch);
+        constexpr int block_size_m = CONSUMER_WARPGROUPS*kittens::TILE_ROW_DIM<bf16>*4;
+        int num_m_blocks = (seq_len + block_size_m - 1) / block_size_m;
+        dim3 grid(num_m_blocks, qo_heads, batch);
 
         if (is_causal) {
             cudaFuncSetAttribute(
@@ -401,10 +427,55 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
 
             fwd_attend_ker<128, false><<<grid, (32*NUM_WORKERS), mem_size, stream>>>(g);
         }
-
-        CHECK_CUDA_ERROR(cudaGetLastError());
     }
+
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
 
     return {o, l_vec};
 }
 """
+
+
+@functools.cache
+def load_tk_attention_module():
+    old_torch_cuda_arch_list = os.getenv("TORCH_CUDA_ARCH_LIST")
+    os.environ["TORCH_CUDA_ARCH_LIST"] = "9.0a"
+    try:
+        module = load_inline(
+            name="quantum_attn_tk_attention",
+            cpp_sources=[
+                "std::vector<torch::Tensor> attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal);"
+            ],
+            cuda_sources=[TK_ATTENTION_SOURCE],
+            extra_cflags=["-std=c++20", "-DNDEBUG"],
+            extra_cuda_cflags=[
+                "-std=c++20",
+                # "-U__CUDA_NO_HALF_OPERATORS__",
+                # "-U__CUDA_NO_HALF_CONVERSIONS__",
+                # "-U__CUDA_NO_HALF2_OPERATORS__",
+                # "-U__CUDA_NO_HALF2_CONVERSIONS__",
+                # "-U__CUDA_NO_BFLOAT16_OPERATORS__",
+                # "-U__CUDA_NO_BFLOAT16_CONVERSIONS__",
+                # "-U__CUDA_NO_BFLOAT162_OPERATORS__",
+                # "-U__CUDA_NO_BFLOAT162_CONVERSIONS__",
+                "--expt-extended-lambda",
+                "--expt-relaxed-constexpr",
+                "--use_fast_math",
+                # "--ptxas-options=-v",  # printing out number of registers
+                # "--ptxas-options=--verbose,--register-usage-level=10,--warn-on-local-memory-usage",  # printing out number of registers
+                "-lineinfo",
+                "-O3",
+                "-DNDEBUG",
+                "-DKITTENS_HOPPER",
+            ],
+            extra_ldflags=["-lcuda", "-lcudart"],
+            extra_include_paths=[tk_utils.get_tk_include_dir()],
+            functions=["attention_forward"],
+            verbose=True,
+        )
+    finally:
+        if old_torch_cuda_arch_list is None:
+            os.environ.pop("TORCH_CUDA_ARCH_LIST")
+        else:
+            os.environ["TORCH_CUDA_ARCH_LIST"] = old_torch_cuda_arch_list
+    return module

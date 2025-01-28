@@ -1,10 +1,8 @@
-from contextlib import contextmanager
-
 import pytest
+
 import quantum_attn
 import torch
 import torch.nn.functional as F
-import triton.profiler as proton
 from quantum_attn import quantum_attn_interface
 from torch.nn.attention import sdpa_kernel, SDPBackend
 
@@ -50,9 +48,9 @@ def _test_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, force_eager_fa
             "attention.force_eager_fallback": force_eager_fallback,
         }
     ):
-        qattn_out = attn_func(query, key, value, is_causal=is_causal)
+        attn_out = attn_func(query, key, value, is_causal=is_causal)
 
-    rmse = torch.sqrt(F.mse_loss(qattn_out, fa_out))
+    rmse = torch.sqrt(F.mse_loss(attn_out, fa_out))
     print(f"RMSE: {rmse}")
     assert rmse < 1e-2, f"RMSE: {rmse}"
 

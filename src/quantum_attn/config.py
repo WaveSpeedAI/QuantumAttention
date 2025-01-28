@@ -26,6 +26,9 @@ class triton:
 class attention:
     force_eager_fallback = os.getenv("QUANTUM_ATTN_FORCE_EAGER_FALLBACK") == "1"
 
+    enable_tk_tma_kernel = os.getenv("QUANTUM_ATTN_ENABLE_TK_TMA_KERNEL", "1") == "1"
+    enable_triton_tma_kernel = os.getenv("QUANTUM_ATTN_ENABLE_TRITON_TMA_KERNEL", "1") == "1"
+
 
 try:
     from torch.utils._config_module import install_config_module
