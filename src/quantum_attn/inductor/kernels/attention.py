@@ -420,6 +420,9 @@ def _attn_fwd_inner(
     num_programs_m = (N_CTX_Q + BLOCK_M - 1) // BLOCK_M
     for pid in range(start_pid, num_programs_m * Z * H, NUM_SMS):
         start_m = pid % num_programs_m
+        if STAGE & 2:
+            if start_m // num_programs_m % 2 != 0:
+                start_m = start_m * (start_m // num_programs_m + 1) - start_m % num_programs_m
         off_hz = pid // num_programs_m
         off_z = off_hz // H
         off_h = off_hz % H
