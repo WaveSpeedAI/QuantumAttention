@@ -1,3 +1,3 @@
 # QuantumAttention
 
-Better FP8 attention for Hopper
+Better (FP8) attention for Hopper
