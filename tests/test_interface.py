@@ -88,8 +88,8 @@ def _test_benchmark_attn_func(D, dtype, device, is_causal, is_fp8=False):
 
     torch.manual_seed(0)
 
-    B = 2
-    H = 8
+    B = 16
+    H = 16
     S_Q = 8192
     S_KV = 8192
 

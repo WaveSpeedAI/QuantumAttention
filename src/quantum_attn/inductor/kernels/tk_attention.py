@@ -108,6 +108,7 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
     if(warpgroupid == NUM_WARPGROUPS-1) {
         warpgroup::decrease_registers<32>();
+        // warpgroup::producer_registers();
 
         int kv_iters;
         if constexpr (is_causal) {
@@ -130,6 +131,7 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     }
     else {
         warpgroup::increase_registers<160>();
+        // warpgroup::consumer_registers<CONSUMER_WARPGROUPS>();
 
         rt_fl<16, K::kv_height>  att_block;
         rt_bf<16, K::kv_height>  att_block_mma;
@@ -307,15 +309,15 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
     bf16*  d_v = reinterpret_cast<bf16*>(v_ptr);
 
     // for the returned outputs
-    torch::Tensor o     = torch::empty({static_cast<const uint>(batch),
-                                        static_cast<const uint>(qo_heads),
-                                        static_cast<const uint>(seq_len),
-                                        static_cast<const uint>(head_dim)}, v.options().memory_format(at::MemoryFormat::Contiguous));
+    torch::Tensor o     = torch::empty({static_cast<uint>(batch),
+                                        static_cast<uint>(qo_heads),
+                                        static_cast<uint>(seq_len),
+                                        static_cast<uint>(head_dim)}, v.options().memory_format(at::MemoryFormat::Contiguous));
 
-    torch::Tensor l_vec = torch::empty({static_cast<const uint>(batch),
-                                        static_cast<const uint>(qo_heads),
-                                        static_cast<const uint>(seq_len),
-                                        static_cast<const uint>(1)},
+    torch::Tensor l_vec = torch::empty({static_cast<uint>(batch),
+                                        static_cast<uint>(qo_heads),
+                                        static_cast<uint>(seq_len),
+                                        static_cast<uint>(1)},
                                         torch::TensorOptions().dtype(torch::kFloat).device(q.device()).memory_format(at::MemoryFormat::Contiguous));
 
 
@@ -351,7 +353,7 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
         globals g{qg_arg, kg_arg, vg_arg, lg_arg, og_arg, static_cast<int>(seq_len), static_cast<int>(hr)};
 
         auto mem_size = kittens::MAX_SHARED_MEMORY;
-        auto threads  = NUM_WORKERS * kittens::WARP_THREADS;
+        // auto threads  = NUM_WORKERS * kittens::WARP_THREADS;
 
         // TORCH_CHECK(seq_len % (CONSUMER_WARPGROUPS*kittens::TILE_DIM*4) == 0, "sequence length must be divisible by 192");
         constexpr int block_size_m = CONSUMER_WARPGROUPS*kittens::TILE_ROW_DIM<bf16>*4;
@@ -402,7 +404,7 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
         globals g{qg_arg, kg_arg, vg_arg, lg_arg, og_arg, static_cast<int>(seq_len), static_cast<int>(hr)};
 
         auto mem_size = kittens::MAX_SHARED_MEMORY;
-        auto threads  = NUM_WORKERS * kittens::WARP_THREADS;
+        // auto threads  = NUM_WORKERS * kittens::WARP_THREADS;
 
         // TORCH_CHECK(seq_len % (CONSUMER_WARPGROUPS*kittens::TILE_DIM*4) == 0, "sequence length must be divisible by 192");
         constexpr int block_size_m = CONSUMER_WARPGROUPS*kittens::TILE_ROW_DIM<bf16>*4;
@@ -465,6 +467,7 @@ def load_tk_attention_module():
                 # "--ptxas-options=--verbose,--register-usage-level=10,--warn-on-local-memory-usage",  # printing out number of registers
                 "-lineinfo",
                 "-O3",
+                "-Xcudafe --diag_suppress=2361",
                 "-DNDEBUG",
                 "-DKITTENS_HOPPER",
             ],
