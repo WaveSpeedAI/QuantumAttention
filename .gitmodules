@@ -1,3 +1,6 @@
-[submodule "cutlass"]
+[submodule "fahopper/csrc/cutlass"]
 	path = fahopper/csrc/cutlass
 	url = https://github.com/NVIDIA/cutlass.git
+[submodule "src/quantum_attn/tk_repo"]
+	path = src/quantum_attn/tk_repo
+	url = https://github.com/chengzeyi/ThunderKittens.git

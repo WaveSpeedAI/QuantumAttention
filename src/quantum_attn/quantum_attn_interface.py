@@ -2,9 +2,9 @@ from typing import Optional
 
 import torch
 
-from quantum_attn.nn import dynamically_quantize_fp8, fp8_attention_forward
+from quantum_attn.nn import attention_forward, dynamically_quantize_fp8, fp8_attention_forward
 
-__all__ = ["fp8_attn_func", "dynamic_fp8_attn_func", "dynamically_quantize_fp8"]
+__all__ = ["attention_forward", "fp8_attn_func", "dynamically_quantize_fp8"]
 
 
 def fp8_attn_func(
@@ -16,9 +16,8 @@ def fp8_attn_func(
     is_causal: bool = False,
     *,
     scale: float = None,
-    scale_q: torch.Tensor,
-    scale_k: torch.Tensor,
-    scale_v: torch.Tensor,
+    scale_q: Optional[torch.Tensor] = None,
+    scale_k: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     return fp8_attention_forward(
         query,
@@ -30,11 +29,10 @@ def fp8_attn_func(
         scale=scale,
         scale_q=scale_q,
         scale_k=scale_k,
-        scale_v=scale_v,
     )
 
 
-def dynamic_fp8_attn_func(
+def attn_func(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -44,11 +42,7 @@ def dynamic_fp8_attn_func(
     *,
     scale: float = None,
 ) -> torch.Tensor:
-    query, scale_q = dynamically_quantize_fp8(query, reduction_dim=-1)
-    key, scale_k = dynamically_quantize_fp8(key, reduction_dim=-1)
-    value, scale_v = dynamically_quantize_fp8(value, reduction_dim=-2)
-
-    return fp8_attention_forward(
+    return attention_forward(
         query,
         key,
         value,
@@ -56,7 +50,4 @@ def dynamic_fp8_attn_func(
         dropout_p=dropout_p,
         is_causal=is_causal,
         scale=scale,
-        scale_q=scale_q,
-        scale_k=scale_k,
-        scale_v=scale_v,
     )

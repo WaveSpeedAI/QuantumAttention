@@ -8,18 +8,26 @@ _save_config_ignore = {
 }
 
 
+use_fast_accum = os.getenv("QUANTUM_ATTN_USE_FAST_ACCUM", "1") == "1"
+
+
 class dynamo:
     dynamic = os.getenv("QUANTUM_ATTN_DYNAMIC") == "1"
 
+    mode = os.getenv("QUANTUM_ATTN_MODE", "max-autotune-no-cudagraphs")
+
+
+class triton:
+    enable_fast_math = os.getenv("QUANTUM_ATTN_ENABLE_FAST_MATH", "1") == "1"
+
+    allow_reduced_precision_compute = os.getenv("PARA_ATTN_ALLOW_REDUCED_PRECISION_COMPUTE") == "1"
+
 
 class attention:
-    use_fast_accum = os.getenv("QUANTUM_ATTN_USE_FAST_ACCUM", "1") == "1"
-
-    allow_reduced_precision_compute = os.getenv("PARA_ATTN_ALLOW_REDUCED_PRECISION_COMPUTE", "1") == "1"
-
-    fast_math = os.getenv("QUANTUM_ATTN_FAST_MATH", "1") == "1"
-
     force_eager_fallback = os.getenv("QUANTUM_ATTN_FORCE_EAGER_FALLBACK") == "1"
+
+    enable_tk_tma_kernel = os.getenv("QUANTUM_ATTN_ENABLE_TK_TMA_KERNEL", "1") == "1"
+    enable_triton_tma_kernel = os.getenv("QUANTUM_ATTN_ENABLE_TRITON_TMA_KERNEL", "1") == "1"
 
 
 try:

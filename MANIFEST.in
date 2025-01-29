@@ -1,6 +1,7 @@
 include MANIFEST.in
 include LICENSE
 include requirements.txt
+recursive-include src/quantum_attn/tk_repo/include *
 recursive-include tests *
 prune */__pycache__
 global-exclude *.o *.so *.dylib *.a .git *.pyc *.swp
