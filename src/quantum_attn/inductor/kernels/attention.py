@@ -833,6 +833,7 @@ def tuned_attention_forward(
     use_triton_tma_kernel = (
         config.attention.enable_triton_tma_kernel
         and query.get_dtype() in (torch.float16, torch.bfloat16, torch.float8_e4m3fn)
+        and checks.torch_version_compare("ge", "2.7.0")
         and checks.has_triton_tma_support()
         and attn_mask is None
         and dropout_p == 0.0
