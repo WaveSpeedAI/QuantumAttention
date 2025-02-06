@@ -100,20 +100,20 @@ def _validate_tk_tma_input(
     if query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
         raise ValueError("NYI: query, key, and value must be 4D tensors")
     if value.size(-1) != query.size(-1):
-        return False, "NYI: query and value must have the same embedding dimension"
+        raise ValueError("NYI: query and value must have the same embedding dimension")
     if query.size(-3) != key.size(-3):
-        return False, (
+        raise ValueError(
             f"Expect query and key/value to have the same number of heads "
             f"but got Hq={query.size(-3)} and Hkv={key.size(-3)}. "
         )
     if query.size(-2) != key.size(-2):
-        return False, (
+        raise ValueError(
             f"Expect query and key to have the same sequence length "
             f"but got Sq={query.size(-2)} and Skv={key.size(-2)}. "
         )
 
     if not _tk_tma_supported_head_dim(query.size(-1)):
-        return False, f"Unsupported head dimension: {query.size(-1)}"
+        raise ValueError(f"Unsupported head dimension: {query.size(-1)}")
 
 
 _TRITON_TMA_SDPA_SUPPORTED_HEAD_DIMS = [64, 128, 256]
@@ -191,15 +191,15 @@ def _validate_triton_tma_sdpa_input(
     if query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
         raise ValueError("NYI: query, key, and value must be 4D tensors")
     if value.size(-1) != query.size(-1):
-        return False, "NYI: query and value must have the same embedding dimension"
+        raise ValueError("NYI: query and value must have the same embedding dimension")
     if query.size(-3) != key.size(-3):
-        return False, (
+        raise ValueError(
             f"Expect query and key/value to have the same number of heads "
             f"but got Hq={query.size(-3)} and Hkv={key.size(-3)}. "
         )
 
     if not _triton_tma_sdpa_supported_head_dim(query.size(-1)):
-        return False, f"Unsupported head dimension: {query.size(-1)}"
+        raise ValueError(f"Unsupported head dimension: {query.size(-1)}")
 
 
 def ca_use_tk_tma_attention_forward(
