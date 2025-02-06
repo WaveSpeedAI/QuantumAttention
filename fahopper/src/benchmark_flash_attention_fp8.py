@@ -78,9 +78,7 @@ def convert_to_cudnn_type(torch_type):
 def cudnn_spda_setup(qkv, seqlen_q, seqlen_k, causal=False):
     b, _, _, nheads, headdim = qkv.shape
     assert cudnn is not None, "CUDNN is not available"
-    o_gpu = torch.zeros(
-        b, seqlen_q, nheads, headdim, dtype=qkv.dtype, device=qkv.device
-    )
+    o_gpu = torch.zeros(b, seqlen_q, nheads, headdim, dtype=qkv.dtype, device=qkv.device)
     o_gpu_transposed = torch.as_strided(
         o_gpu,
         [b, nheads, seqlen_q, headdim],
@@ -131,9 +129,7 @@ def cudnn_spda_setup(qkv, seqlen_q, seqlen_k, causal=False):
     )
 
     def get_default_scale_tensor():
-        return graph.tensor(
-            dim=[1, 1, 1, 1], stride=[1, 1, 1, 1], data_type=cudnn.data_type.FLOAT
-        )
+        return graph.tensor(dim=[1, 1, 1, 1], stride=[1, 1, 1, 1], data_type=cudnn.data_type.FLOAT)
 
     default_scale_gpu = torch.ones(1, 1, 1, 1, dtype=torch.float32, device="cuda")
     descale_q = get_default_scale_tensor()
@@ -159,9 +155,7 @@ def cudnn_spda_setup(qkv, seqlen_q, seqlen_k, causal=False):
         name="sdpa",
     )
 
-    o.set_output(True).set_dim(o_gpu_transposed.shape).set_stride(
-        o_gpu_transposed.stride()
-    )
+    o.set_output(True).set_dim(o_gpu_transposed.shape).set_stride(o_gpu_transposed.stride())
 
     amax_s.set_output(False).set_dim(amax_s_gpu.shape).set_stride(amax_s_gpu.stride())
     amax_o.set_output(False).set_dim(amax_o_gpu.shape).set_stride(amax_o_gpu.stride())
@@ -188,9 +182,7 @@ def cudnn_spda_setup(qkv, seqlen_q, seqlen_k, causal=False):
         amax_o: amax_o_gpu,
     }
 
-    workspace = torch.empty(
-        graph.get_workspace_size(), device="cuda", dtype=torch.uint8
-    )
+    workspace = torch.empty(graph.get_workspace_size(), device="cuda", dtype=torch.uint8)
 
     def run(*args, **kwargs):
         graph.execute(variant_pack, workspace)
@@ -213,9 +205,7 @@ def attention_pytorch(qkv, dropout_p=0.0, causal=True):
     k = rearrange(k, "b s h d -> (b h) d s")
     softmax_scale = 1.0 / math.sqrt(d)
     # Preallocate attn_weights for `baddbmm`
-    scores = torch.empty(
-        batch_size * nheads, seqlen, seqlen, dtype=qkv.dtype, device=qkv.device
-    )
+    scores = torch.empty(batch_size * nheads, seqlen, seqlen, dtype=qkv.dtype, device=qkv.device)
     scores = rearrange(
         torch.baddbmm(scores, q, k, beta=0, alpha=softmax_scale),
         "(b h) t s -> b h t s",
@@ -224,9 +214,7 @@ def attention_pytorch(qkv, dropout_p=0.0, causal=True):
     if causal:
         # "triu_tril_cuda_template" not implemented for 'BFloat16'
         # So we have to construct the mask in float
-        causal_mask = torch.triu(
-            torch.full((seqlen, seqlen), -10000.0, device=scores.device), 1
-        )
+        causal_mask = torch.triu(torch.full((seqlen, seqlen), -10000.0, device=scores.device), 1)
         # TD [2022-09-30]: Adding is faster than masked_fill_ (idk why, just better kernel I guess)
         scores = scores + causal_mask.to(dtype=scores.dtype)
     attention = torch.softmax(scores, dim=-1)
@@ -246,9 +234,7 @@ def efficiency(flop, time):
 
 
 def time_fwd(func, *args, **kwargs):
-    time.sleep(
-        1
-    )  # Sleep to avoid residual power throttling from the previous benchmark
+    time.sleep(1)  # Sleep to avoid residual power throttling from the previous benchmark
     time_f = benchmark_forward(func, *args, **kwargs)
     return time_f[1].mean
 
@@ -319,12 +305,7 @@ for causal in causal_vals:
             if attention_triton is not None:
                 q_transposed = q.transpose(1, 2).contiguous().to(torch.float8_e4m3fn)
                 k_transposed = k.transpose(1, 2).contiguous().to(torch.float8_e4m3fn)
-                v_transposed = (
-                    v.transpose(1, 2)
-                    .contiguous()
-                    .permute(0, 1, 3, 2)
-                    .to(torch.float8_e4m3fn)
-                )
+                v_transposed = v.transpose(1, 2).contiguous().permute(0, 1, 3, 2).to(torch.float8_e4m3fn)
                 scale = 1 / math.sqrt(headdim)
                 f = time_fwd(
                     attention_triton,
@@ -399,9 +380,7 @@ for causal in causal_vals:
 
             if cudnn is not None:
                 qkv_fp8 = qkv.to(dtype)
-                time.sleep(
-                    1
-                )  # Sleep to avoid residual power throttling from the previous benchmark
+                time.sleep(1)  # Sleep to avoid residual power throttling from the previous benchmark
                 f = time_fwd(
                     cudnn_spda_setup(qkv_fp8, seqlen, seqlen, causal=causal),
                     repeats=repeats,
@@ -430,18 +409,14 @@ for causal in causal_vals:
                 #         print(item_baseline)
                 # torch.testing.assert_close(res, res_baseline, atol=0.05, rtol=0.05)
 
-            print(
-                f"### causal={causal}, headdim={headdim}, batch_size={batch_size}, seqlen={seqlen} ###"
-            )
+            print(f"### causal={causal}, headdim={headdim}, batch_size={batch_size}, seqlen={seqlen} ###")
             for method in methods:
                 speed_f[config, method] = efficiency(
                     flops(batch_size, seqlen, headdim, nheads, causal, mode="fwd"),
                     time_f[config, method],
                 )
                 # print (time_f[config,method])
-                print(
-                    f"{method} fwd: {speed_f[config, method]:.2f} TFLOPs/s, {time_f[config, method] * 1e3} ms, "
-                )
+                print(f"{method} fwd: {speed_f[config, method]:.2f} TFLOPs/s, {time_f[config, method] * 1e3} ms, ")
 
 # with open('flash3_attn_time.plk', 'wb') as fp:
 #     pickle.dump((time_f, time_b, time_f_b), fp, protocol=pickle.HIGHEST_PROTOCOL)

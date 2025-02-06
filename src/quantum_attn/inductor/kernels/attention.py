@@ -1,5 +1,3 @@
-import math
-
 import sympy
 
 import torch
@@ -13,16 +11,13 @@ from torch._inductor import config as inductor_config, ir
 from torch._inductor.codegen.triton import TritonOverrides
 from torch._inductor.kernel.mm_common import mm_args
 from torch._inductor.runtime.runtime_utils import next_power_of_2
-from torch._inductor.select_algorithm import autotune_select_algorithm, TritonTemplate, ExternKernelChoice
-from torch._inductor.utils import (
-    ceildiv as cdiv,
-    is_dynamic,
-    use_max_autotune,
-)
+from torch._inductor.select_algorithm import autotune_select_algorithm, ExternKernelChoice, TritonTemplate
+from torch._inductor.utils import ceildiv as cdiv, is_dynamic, use_max_autotune
 from torch._inductor.virtualized import V
 
-from quantum_attn.utils import checks
 from quantum_attn import config
+
+from quantum_attn.utils import checks
 
 from .mm_common import acc_type, get_device_shared_memory, mm_options, reduce_block_size_for_cuda, require_dense_memory
 from .tk_attention import load_tk_attention_module
@@ -619,8 +614,7 @@ def attention_heuristic_configs(
 
     BLOCK_DMODEL = max(next_power_of_2(head_dim), 16)
 
-    is_ge_sm90 = layout.device.type == "cuda" and checks.cuda_capability_compare(
-        "ge", 9, 0, device=layout.device)
+    is_ge_sm90 = layout.device.type == "cuda" and checks.cuda_capability_compare("ge", 9, 0, device=layout.device)
 
     configs = []
     picked_confs = set()
@@ -628,8 +622,7 @@ def attention_heuristic_configs(
         BLOCK_M, BLOCK_N, BLOCK_K, num_warps, num_stages = c
 
         if optimize_block_size and checks.torch_version_compare("ge", "2.2.0"):
-            n_ctx_q_hint = V.graph.sizevars.size_hint(
-                N_CTX_Q, fallback=inductor_config.unbacked_symint_fallback)
+            n_ctx_q_hint = V.graph.sizevars.size_hint(N_CTX_Q, fallback=inductor_config.unbacked_symint_fallback)
             if n_ctx_q_hint <= 32:
                 BLOCK_M = min(BLOCK_M, 32)
             elif n_ctx_q_hint <= 64:
@@ -637,8 +630,7 @@ def attention_heuristic_configs(
             # elif n_ctx_q_hint <= 96:
             #     BLOCK_M = min(BLOCK_M, 32)
 
-            n_ctx_k_hint = V.graph.sizevars.size_hint(
-                N_CTX_K, fallback=inductor_config.unbacked_symint_fallback)
+            n_ctx_k_hint = V.graph.sizevars.size_hint(N_CTX_K, fallback=inductor_config.unbacked_symint_fallback)
             if n_ctx_k_hint <= 32:
                 BLOCK_N = min(BLOCK_N, 32)
             elif n_ctx_k_hint <= 64:
@@ -647,22 +639,16 @@ def attention_heuristic_configs(
             #     BLOCK_N = min(BLOCK_N, 32)
 
             if layout.device.type == "cuda":
-                b_hint = V.graph.sizevars.size_hint(
-                    B, fallback=inductor_config.unbacked_symint_fallback)
-                h_hint = V.graph.sizevars.size_hint(
-                    H, fallback=inductor_config.unbacked_symint_fallback)
-                BLOCK_M, _ = reduce_block_size_for_cuda(BLOCK_M,
-                                                        1,
-                                                        n_ctx_q_hint,
-                                                        1,
-                                                        device=layout.device,
-                                                        b=b_hint * h_hint)
+                b_hint = V.graph.sizevars.size_hint(B, fallback=inductor_config.unbacked_symint_fallback)
+                h_hint = V.graph.sizevars.size_hint(H, fallback=inductor_config.unbacked_symint_fallback)
+                BLOCK_M, _ = reduce_block_size_for_cuda(
+                    BLOCK_M, 1, n_ctx_q_hint, 1, device=layout.device, b=b_hint * h_hint
+                )
 
         while BLOCK_DMODEL % BLOCK_K != 0:
             BLOCK_K //= 2
 
-        if BLOCK_M < 128 and is_ge_sm90 and not checks.triton_version_compare(
-                "ge", "3.1.0"):
+        if BLOCK_M < 128 and is_ge_sm90 and not checks.triton_version_compare("ge", "3.1.0"):
             # https://github.com/triton-lang/triton/pull/4492
             # Assertion `!(srcMmaLayout && dstMmaLayout && !srcMmaLayout.isAmpere()) && "mma -> mma layout conversion is only supported on Ampere"' failed.
             num_warps = min(num_warps, 4)
@@ -682,7 +668,8 @@ def attention_heuristic_configs(
                 },
                 num_warps=num_warps,
                 num_stages=num_stages,
-            ))
+            )
+        )
 
     if not use_max_autotune():
         configs = configs[:1]
@@ -703,13 +690,11 @@ def early_attention_config_prune(configs, query, key, value):
     filtered_configs = []
     for c in configs:
         kw = c.kwargs
-        BLOCK_M, BLOCK_N, BLOCK_DMODEL = kw["BLOCK_M"], kw["BLOCK_N"], kw[
-            "BLOCK_DMODEL"]
+        BLOCK_M, BLOCK_N, BLOCK_DMODEL = kw["BLOCK_M"], kw["BLOCK_N"], kw["BLOCK_DMODEL"]
         num_stages = c.num_stages
         required_shared_memory = (
-            BLOCK_N * num_stages *
-            (key_dtype.itemsize + value_dtype.itemsize) +
-            BLOCK_M * query_dtype.itemsize) * BLOCK_DMODEL
+            BLOCK_N * num_stages * (key_dtype.itemsize + value_dtype.itemsize) + BLOCK_M * query_dtype.itemsize
+        ) * BLOCK_DMODEL
         if required_shared_memory <= max_shared_memory:
             filtered_configs.append(c)
     return filtered_configs
@@ -777,8 +762,7 @@ def generate_attention_template_choices(
     )
     triton_configs.extend(heuristic_configs)
 
-    triton_configs = early_attention_config_prune(triton_configs, query, key,
-                                                  value)
+    triton_configs = early_attention_config_prune(triton_configs, query, key, value)
 
     for fa_config in triton_configs:
         mm_options_ = mm_options(fa_config, m1, n1, k1, layout1)
@@ -790,8 +774,9 @@ def generate_attention_template_choices(
         fast_softmax = not dynamic and mm_options_["BLOCK_N"] >= N_CTX_K
         even_n_symbolic = (
             # it isn't worth guarding on this
-            sympy.gcd(N_CTX_K,
-                      mm_options_["BLOCK_N"]) == mm_options_["BLOCK_N"])
+            sympy.gcd(N_CTX_K, mm_options_["BLOCK_N"])
+            == mm_options_["BLOCK_N"]
+        )
 
         attention_forward_template.maybe_append_choice(
             choices,
@@ -815,8 +800,7 @@ def generate_attention_template_choices(
         )
 
 
-@register_lowering(quantum_attn_ops.attention_forward.default,
-                   type_promotion_kind=None)
+@register_lowering(quantum_attn_ops.attention_forward.default, type_promotion_kind=None)
 def tuned_attention_forward(
     query,
     key,
@@ -835,36 +819,37 @@ def tuned_attention_forward(
     k1 = V.graph.sizevars.evaluate_static_shape(query.get_size()[-1])
     n2 = V.graph.sizevars.evaluate_static_shape(value.get_size()[-1])
 
-    use_tk_tma_kernel = (config.attention.enable_tk_tma_kernel
-                         and query.get_dtype() == torch.bfloat16
-                         and attn_mask is None and dropout_p == 0.0
-                         and scale is None
-                         and query.get_size()[-2] == key.get_size()[-2]
-                         and k1 == n2 and k1 in (64, 128))
+    use_tk_tma_kernel = (
+        config.attention.enable_tk_tma_kernel
+        and query.get_dtype() == torch.bfloat16
+        and attn_mask is None
+        and dropout_p == 0.0
+        and scale is None
+        and query.get_size()[-2] == key.get_size()[-2]
+        and k1 == n2
+        and k1 in (64, 128)
+    )
 
-    use_triton_tma_kernel = (config.attention.enable_triton_tma_kernel
-                             and query.get_dtype()
-                             in (torch.float16, torch.bfloat16,
-                                 torch.float8_e4m3fn)
-                             and checks.has_triton_tma_support()
-                             and attn_mask is None and dropout_p == 0.0
-                             and k1 == n2 and k1 in (64, 128, 256))
+    use_triton_tma_kernel = (
+        config.attention.enable_triton_tma_kernel
+        and query.get_dtype() in (torch.float16, torch.bfloat16, torch.float8_e4m3fn)
+        and checks.has_triton_tma_support()
+        and attn_mask is None
+        and dropout_p == 0.0
+        and k1 == n2
+        and k1 in (64, 128, 256)
+    )
 
-    query, key, value = (ir.ExternKernel.realize_input(x)
-                         for x in (query, key, value))
+    query, key, value = (ir.ExternKernel.realize_input(x) for x in (query, key, value))
     if use_tk_tma_kernel:
-        query, key, value = (require_dense_memory(x)
-                             for x in (query, key, value))
+        query, key, value = (require_dense_memory(x) for x in (query, key, value))
     elif use_triton_tma_kernel:
         query = require_dense_memory(query, num_dims=1)
-        key, value = (require_dense_memory(x, num_dims=2)
-                      for x in (key, value))
+        key, value = (require_dense_memory(x, num_dims=2) for x in (key, value))
 
     if scale_q is not None:
-        scale_q, scale_k = (ir.ExternKernel.realize_input(x)
-                            for x in (scale_q, scale_k))
-        scale_q, scale_k = (require_dense_memory(x, num_dims=1)
-                            for x in (scale_q, scale_k))
+        scale_q, scale_k = (ir.ExternKernel.realize_input(x) for x in (scale_q, scale_k))
+        scale_q, scale_k = (require_dense_memory(x, num_dims=1) for x in (scale_q, scale_k))
     for x in (query, key, value, scale_q, scale_k, attn_mask):
         if x is not None:
             x.freeze_layout()
@@ -910,22 +895,18 @@ def tuned_attention_forward(
                 args,
                 layout=layout2,
                 **kwargs,
-            ))
+            )
+        )
     if use_triton_tma_kernel:
         generate_attention_template_choices(
-            choices,
-            *args,
-            layout2=layout2,
-            enable_max_autotune=use_max_autotune(),
-            **kwargs)
+            choices, *args, layout2=layout2, enable_max_autotune=use_max_autotune(), **kwargs
+        )
     if not use_max_autotune():
         choices = choices[:1]
-    return autotune_select_algorithm("quantum_attn_attention_forward", choices,
-                                     args, layout2)
+    return autotune_select_algorithm("quantum_attn_attention_forward", choices, args, layout2)
 
 
-@register_lowering(quantum_attn_ops.fp8_attention_forward.default,
-                   type_promotion_kind=None)
+@register_lowering(quantum_attn_ops.fp8_attention_forward.default, type_promotion_kind=None)
 def fp8_attention_forward(
     query,
     key,

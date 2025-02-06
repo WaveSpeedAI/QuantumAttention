@@ -52,9 +52,7 @@ def _flash_attn_forward(
         maybe_contiguous(x) for x in (cu_seqlens_q, cu_seqlens_k, cu_seqlens_k_new)
     ]
     seqused_q, seqused_k = [maybe_contiguous(x) for x in (seqused_q, seqused_k)]
-    page_table, kv_batch_idx, leftpad_k = [
-        maybe_contiguous(x) for x in (page_table, kv_batch_idx, leftpad_k)
-    ]
+    page_table, kv_batch_idx, leftpad_k = [maybe_contiguous(x) for x in (page_table, kv_batch_idx, leftpad_k)]
     rotary_cos, rotary_sin = [maybe_contiguous(x) for x in (rotary_cos, rotary_sin)]
     out, softmax_lse, *rest = flash_attn_3_cuda.fwd(
         q,

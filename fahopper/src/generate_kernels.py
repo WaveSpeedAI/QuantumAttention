@@ -154,9 +154,7 @@ def get_all_kernels() -> List[Kernel]:
                 packgqa=packgqa,
                 direction="fwd",
             )
-    for dtype, head_dim, softcap, sm in itertools.product(
-        DTYPE_MAP_BWD.keys(), HEAD_DIMENSIONS, SOFTCAP, SM
-    ):
+    for dtype, head_dim, softcap, sm in itertools.product(DTYPE_MAP_BWD.keys(), HEAD_DIMENSIONS, SOFTCAP, SM):
         yield Kernel(
             sm=sm,
             dtype=dtype,
@@ -221,10 +219,7 @@ def batch_softcap(kernels_all) -> List[KERNEL_BATCH]:
         kernels = [
             k
             for k in kernels_all
-            if k.direction == "bwd"
-            and k.dtype == dtype
-            and k.head_dim == head_dim
-            and k.sm == sm
+            if k.direction == "bwd" and k.dtype == dtype and k.head_dim == head_dim and k.sm == sm
         ]
         if len(kernels) > 0:
             filename = f"flash_bwd_hdim{head_dim}_{dtype}_softcapall_sm{sm}.cu"

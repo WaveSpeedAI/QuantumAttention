@@ -1,4 +1,3 @@
-import math
 from typing import Optional, Tuple, Union
 
 import torch
@@ -54,16 +53,16 @@ def _validate_tk_tma_input(
     scale_q=None,
     scale_k=None,
 ):
-    # TODO: Support bf16
-    if query.dtype != torch.bfloat16:
-        raise ValueError(
-            f"Expected query to have dtype torch.bfloat16, but got query.dtype: {query.dtype} instead."
-        )
-
     if attn_mask is not None:
         raise ValueError("NYI: attn_mask must be None")
     if dropout_p != 0.0:
         raise ValueError("NYI: dropout_p must be 0.0")
+    if scale is not None:
+        raise ValueError("NYI: scale must be None")
+    # TODO: Support bf16
+    if query.dtype != torch.bfloat16:
+        raise ValueError(f"Expected query to have dtype torch.bfloat16, but got query.dtype: {query.dtype} instead.")
+
     if scale_q is None:
         if scale_k is not None:
             raise ValueError("scale_k must be None if scale_q is None")
@@ -159,8 +158,7 @@ def _validate_triton_tma_sdpa_input(
             raise ValueError("scale_q must be None if scale_k is None")
         if query.dtype != torch.float8_e4m3fn:
             raise ValueError(
-                f"Expected query to have dtype torch.float8_e4m3fn, "
-                f"but got query.dtype: {query.dtype} instead."
+                f"Expected query to have dtype torch.float8_e4m3fn, " f"but got query.dtype: {query.dtype} instead."
             )
         if scale_q.shape != query.shape[:-1]:
             raise ValueError(
@@ -340,7 +338,11 @@ def attention_forward(
         with torch._dynamo.utils.disable_cache_limit():
             with _temp_remove_pre_dispatch_torch_function_mode():
                 out = torch.compile(
-                    _attention_forward_wrapper, backend="inductor", fullgraph=True, dynamic=config.dynamo.dynamic, mode=config.dynamo.mode
+                    _attention_forward_wrapper,
+                    backend="inductor",
+                    fullgraph=True,
+                    dynamic=config.dynamo.dynamic,
+                    mode=config.dynamo.mode,
                 )(
                     query,
                     key,
@@ -447,7 +449,11 @@ def fp8_attention_forward(
         with torch._dynamo.utils.disable_cache_limit():
             with _temp_remove_pre_dispatch_torch_function_mode():
                 out = torch.compile(
-                    _fp8_attention_forward_wrapper, backend="inductor", fullgraph=True, dynamic=config.dynamo.dynamic, mode=config.dynamo.mode
+                    _fp8_attention_forward_wrapper,
+                    backend="inductor",
+                    fullgraph=True,
+                    dynamic=config.dynamo.dynamic,
+                    mode=config.dynamo.mode,
                 )(
                     query,
                     key,

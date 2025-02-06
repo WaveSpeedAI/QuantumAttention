@@ -174,17 +174,14 @@ def _write_ninja_file(
         flags.append(f'cuda_cflags = {" ".join(cuda_cflags)}')
         flags.append(f'cuda_post_cflags = {" ".join(cuda_post_cflags)}')
         cuda_post_cflags_sm80 = [
-            s if s != "arch=compute_90a,code=sm_90a" else "arch=compute_80,code=sm_80"
-            for s in cuda_post_cflags
+            s if s != "arch=compute_90a,code=sm_90a" else "arch=compute_80,code=sm_80" for s in cuda_post_cflags
         ]
         flags.append(f'cuda_post_cflags_sm80 = {" ".join(cuda_post_cflags_sm80)}')
         cuda_post_cflags_sm80_sm90 = cuda_post_cflags + [
             "-gencode",
             "arch=compute_80,code=sm_80",
         ]
-        flags.append(
-            f'cuda_post_cflags_sm80_sm90 = {" ".join(cuda_post_cflags_sm80_sm90)}'
-        )
+        flags.append(f'cuda_post_cflags_sm80_sm90 = {" ".join(cuda_post_cflags_sm80_sm90)}')
     flags.append(f'cuda_dlink_post_cflags = {" ".join(cuda_dlink_post_cflags)}')
     flags.append(f'ldflags = {" ".join(ldflags)}')
 
@@ -195,14 +192,10 @@ def _write_ninja_file(
     # See https://ninja-build.org/build.ninja.html for reference.
     compile_rule = ["rule compile"]
     if IS_WINDOWS:
-        compile_rule.append(
-            "  command = cl /showIncludes $cflags -c $in /Fo$out $post_cflags"
-        )
+        compile_rule.append("  command = cl /showIncludes $cflags -c $in /Fo$out $post_cflags")
         compile_rule.append("  deps = msvc")
     else:
-        compile_rule.append(
-            "  command = $cxx -MMD -MF $out.d $cflags -c $in -o $out $post_cflags"
-        )
+        compile_rule.append("  command = $cxx -MMD -MF $out.d $cflags -c $in -o $out $post_cflags")
         compile_rule.append("  depfile = $out.d")
         compile_rule.append("  deps = gcc")
 
@@ -211,31 +204,22 @@ def _write_ninja_file(
         nvcc_gendeps = ""
         # --generate-dependencies-with-compile is not supported by ROCm
         # Nvcc flag `--generate-dependencies-with-compile` is not supported by sccache, which may increase build time.
-        if (
-            torch.version.cuda is not None
-            and os.getenv("TORCH_EXTENSION_SKIP_NVCC_GEN_DEPENDENCIES", "0") != "1"
-        ):
+        if torch.version.cuda is not None and os.getenv("TORCH_EXTENSION_SKIP_NVCC_GEN_DEPENDENCIES", "0") != "1":
             cuda_compile_rule.append("  depfile = $out.d")
             cuda_compile_rule.append("  deps = gcc")
             # Note: non-system deps with nvcc are only supported
             # on Linux so use --generate-dependencies-with-compile
             # to make this work on Windows too.
-            nvcc_gendeps = (
-                "--generate-dependencies-with-compile --dependency-output $out.d"
-            )
+            nvcc_gendeps = "--generate-dependencies-with-compile --dependency-output $out.d"
         cuda_compile_rule_sm80 = (
             ["rule cuda_compile_sm80"]
             + cuda_compile_rule[1:]
-            + [
-                f"  command = $nvcc {nvcc_gendeps} $cuda_cflags -c $in -o $out $cuda_post_cflags_sm80"
-            ]
+            + [f"  command = $nvcc {nvcc_gendeps} $cuda_cflags -c $in -o $out $cuda_post_cflags_sm80"]
         )
         cuda_compile_rule_sm80_sm90 = (
             ["rule cuda_compile_sm80_sm90"]
             + cuda_compile_rule[1:]
-            + [
-                f"  command = $nvcc {nvcc_gendeps} $cuda_cflags -c $in -o $out $cuda_post_cflags_sm80_sm90"
-            ]
+            + [f"  command = $nvcc {nvcc_gendeps} $cuda_cflags -c $in -o $out $cuda_post_cflags_sm80_sm90"]
         )
         cuda_compile_rule.append(
             f"  command = $nvcc_from_env {nvcc_gendeps} $cuda_cflags -c $in -o $out $cuda_post_cflags"
@@ -273,18 +257,12 @@ def _write_ninja_file(
     if library_target is not None:
         link_rule = ["rule link"]
         if IS_WINDOWS:
-            cl_paths = (
-                subprocess.check_output(["where", "cl"])
-                .decode(*SUBPROCESS_DECODE_ARGS)
-                .split("\r\n")
-            )
+            cl_paths = subprocess.check_output(["where", "cl"]).decode(*SUBPROCESS_DECODE_ARGS).split("\r\n")
             if len(cl_paths) >= 1:
                 cl_path = os.path.dirname(cl_paths[0]).replace(":", "$:")
             else:
                 raise RuntimeError("MSVC is required to load C++ extensions")
-            link_rule.append(
-                f'  command = "{cl_path}/link.exe" $in /nologo $ldflags /out:$out'
-            )
+            link_rule.append(f'  command = "{cl_path}/link.exe" $in /nologo $ldflags /out:$out')
         else:
             link_rule.append("  command = $cxx $in $ldflags -o $out")
 
@@ -327,9 +305,7 @@ def get_platform():
 
 
 def get_cuda_bare_metal_version(cuda_dir):
-    raw_output = subprocess.check_output(
-        [cuda_dir + "/bin/nvcc", "-V"], universal_newlines=True
-    )
+    raw_output = subprocess.check_output([cuda_dir + "/bin/nvcc", "-V"], universal_newlines=True)
     output = raw_output.split()
     release_idx = output.index("release") + 1
     bare_metal_version = parse(output[release_idx].split(",")[0])
@@ -375,21 +351,14 @@ def is_offline_build() -> bool:
 def get_flashattn_cache_path():
     user_home = os.getenv("FLASH_ATTENTION_HOME")
     if not user_home:
-        user_home = (
-            os.getenv("HOME")
-            or os.getenv("USERPROFILE")
-            or os.getenv("HOMEPATH")
-            or None
-        )
+        user_home = os.getenv("HOME") or os.getenv("USERPROFILE") or os.getenv("HOMEPATH") or None
     if not user_home:
         raise RuntimeError("Could not find user home directory")
     return os.path.join(user_home, ".flashattn")
 
 
 def open_url(url):
-    user_agent = (
-        "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0"
-    )
+    user_agent = "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0"
     headers = {
         "User-Agent": user_agent,
     }
@@ -405,19 +374,13 @@ def download_and_copy(name, src_path, dst_path, version, url_func):
     base_dir = os.path.dirname(__file__)
     system = platform.system()
     try:
-        arch = {"x86_64": "64", "arm64": "aarch64", "aarch64": "aarch64"}[
-            platform.machine()
-        ]
+        arch = {"x86_64": "64", "arm64": "aarch64", "aarch64": "aarch64"}[platform.machine()]
     except KeyError:
         arch = platform.machine()
     supported = {"Linux": "linux", "Darwin": "linux"}
     url = url_func(supported[system], arch, version)
-    tmp_path = os.path.join(
-        flashattn_cache_path, "nvidia", name
-    )  # path to cache the download
-    dst_path = os.path.join(
-        base_dir, os.pardir, "third_party", "nvidia", "backend", dst_path
-    )  # final binary path
+    tmp_path = os.path.join(flashattn_cache_path, "nvidia", name)  # path to cache the download
+    dst_path = os.path.join(base_dir, os.pardir, "third_party", "nvidia", "backend", dst_path)  # final binary path
     platform_name = "sbsa-linux" if arch == "aarch64" else "x86_64-linux"
     src_path = src_path(platform_name, version) if callable(src_path) else src_path
     src_path = os.path.join(tmp_path, src_path)
@@ -519,11 +482,7 @@ if not SKIP_CUDA_BUILD:
     )
 
     DTYPE_FWD_SM80 = ["bf16"] + (["fp16"] if not DISABLE_FP16 else [])
-    DTYPE_FWD_SM90 = (
-        ["bf16"]
-        + (["fp16"] if not DISABLE_FP16 else [])
-        + (["e4m3"] if not DISABLE_FP8 else [])
-    )
+    DTYPE_FWD_SM90 = ["bf16"] + (["fp16"] if not DISABLE_FP16 else []) + (["e4m3"] if not DISABLE_FP8 else [])
     DTYPE_BWD = ["bf16"] + (["fp16"] if not DISABLE_FP16 else [])
     HEAD_DIMENSIONS_BWD = (
         []
@@ -557,15 +516,11 @@ if not SKIP_CUDA_BUILD:
     ]
     sources_bwd_sm80 = [
         f"instantiations/flash_bwd_hdim{hdim}_{dtype}{softcap}_sm80.cu"
-        for hdim, dtype, softcap in itertools.product(
-            HEAD_DIMENSIONS_BWD, DTYPE_BWD, SOFTCAP
-        )
+        for hdim, dtype, softcap in itertools.product(HEAD_DIMENSIONS_BWD, DTYPE_BWD, SOFTCAP)
     ]
     sources_bwd_sm90 = [
         f"instantiations/flash_bwd_hdim{hdim}_{dtype}{softcap}_sm90.cu"
-        for hdim, dtype, softcap in itertools.product(
-            HEAD_DIMENSIONS_BWD, DTYPE_BWD, SOFTCAP_ALL
-        )
+        for hdim, dtype, softcap in itertools.product(HEAD_DIMENSIONS_BWD, DTYPE_BWD, SOFTCAP_ALL)
     ]
     if DISABLE_BACKWARD:
         sources_bwd_sm90 = []
@@ -641,9 +596,7 @@ def get_wheel_url():
     torch_version_raw = parse(torch.__version__)
     # For CUDA 11, we only compile for CUDA 11.8, and for CUDA 12 we only compile for CUDA 12.2
     # to save CI time. Minor versions should be compatible.
-    torch_cuda_version = (
-        parse("11.8") if torch_cuda_version.major == 11 else parse("12.2")
-    )
+    torch_cuda_version = parse("11.8") if torch_cuda_version.major == 11 else parse("12.2")
     python_version = f"cp{sys.version_info.major}{sys.version_info.minor}"
     platform_name = get_platform()
     package_version = get_package_version()
@@ -654,9 +607,7 @@ def get_wheel_url():
 
     # Determine wheel URL based on CUDA version, torch version, python version and OS
     wheel_filename = f"{PACKAGE_NAME}-{package_version}+cu{cuda_version}torch{torch_version}cxx11abi{cxx11_abi}-{python_version}-{python_version}-{platform_name}.whl"
-    wheel_url = BASE_WHEEL_URL.format(
-        tag_name=f"v{package_version}", wheel_name=wheel_filename
-    )
+    wheel_url = BASE_WHEEL_URL.format(tag_name=f"v{package_version}", wheel_name=wheel_filename)
     return wheel_url, wheel_filename
 
 

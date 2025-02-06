@@ -1,6 +1,8 @@
 import functools
 import os
+
 from torch.utils.cpp_extension import load_inline
+
 from . import tk_utils
 
 TK_ATTENTION_SOURCE = """
@@ -49,7 +51,7 @@ template<int D> struct fwd_globals {
     l_gl l;
     o_gl o;
 
-    const int N; 
+    const int N;
     const int hr;
 };
 

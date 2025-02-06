@@ -13,7 +13,7 @@ if torch.__version__ >= "2.4.0":
 else:
     raise RuntimeError("Your PyTorch version is too old. Please upgrade to PyTorch >= 2.4.0")
 
-    
+
 def _attention_forward(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -40,7 +40,9 @@ def attention_forward(
     *,
     scale: Optional[float] = None,
 ) -> torch.Tensor:
-    return _attention_forward(query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale)
+    return _attention_forward(
+        query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
+    )
 
 
 @_torch_register_fake_wrapper("quantum_attn::attention_forward")
@@ -54,7 +56,9 @@ def _(
     *,
     scale: Optional[float] = None,
 ) -> torch.Tensor:
-    return _attention_forward(query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale)
+    return _attention_forward(
+        query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
+    )
 
 
 def _fp8_attention_forward(

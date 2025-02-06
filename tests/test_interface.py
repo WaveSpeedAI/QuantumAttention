@@ -4,6 +4,7 @@ import quantum_attn
 import torch
 import torch.nn.functional as F
 from quantum_attn import quantum_attn_interface
+from quantum_attn.nn import can_use_attention_forward
 from torch.nn.attention import sdpa_kernel, SDPBackend
 
 if not torch.cuda.is_available():
@@ -19,7 +20,7 @@ def cudnn_sdpa(query, key, value, is_causal=False):
     with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
         return F.scaled_dot_product_attention(query, key, value, is_causal=is_causal)
 
-        
+
 def vanilla_attention(query, key, value, is_causal=False):
     return quantum_attn_interface.attn_func(query, key, value, is_causal=is_causal)
 
@@ -40,6 +41,10 @@ def _test_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, force_eager_fa
     query = torch.randn(B, H, S_Q, D, dtype=dtype, device=device)
     key = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
     value = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
+
+    supported, reason = can_use_attention_forward(query, key, value, is_causal=is_causal)
+    if not supported:
+        pytest.skip(reason)
 
     fa_out = flash_attention(query, key, value, is_causal=is_causal)
 
@@ -96,6 +101,10 @@ def _test_benchmark_attn_func(D, dtype, device, is_causal, is_fp8=False):
     query = torch.randn(B, H, S_Q, D, dtype=dtype, device=device)
     key = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
     value = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
+
+    supported, reason = can_use_attention_forward(query, key, value, is_causal=is_causal)
+    if not supported:
+        pytest.skip(reason)
 
     def fa_fn():
         flash_attention(query, key, value, is_causal)
