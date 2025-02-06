@@ -8,4 +8,4 @@ This project is licensed under a custom license. Individuals or organizations wi
 
 For those with an annual revenue equal to or greater than 5,000,000 USD, a separate commercial license is required.
 
-For more details, please refer to the [LICENSE](./CUSTOM_LICENSE.txt) file.
+For more details, please refer to the [LICENSE](./LICENSE.txt) file.
