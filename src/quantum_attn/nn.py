@@ -59,10 +59,6 @@ def _validate_tk_tma_input(
         raise ValueError("NYI: dropout_p must be 0.0")
     if scale is not None:
         raise ValueError("NYI: scale must be None")
-    # TODO: Support bf16
-    if query.dtype != torch.bfloat16:
-        raise ValueError(f"Expected query to have dtype torch.bfloat16, but got query.dtype: {query.dtype} instead.")
-
     if scale_q is None:
         if scale_k is not None:
             raise ValueError("scale_k must be None if scale_q is None")

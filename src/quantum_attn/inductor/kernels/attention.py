@@ -43,7 +43,7 @@ def tk_attention_forward_kernel(
     key = key.contiguous()
     value = value.contiguous()
 
-    module = load_tk_attention_module()
+    module = load_tk_attention_module(dtype=value.dtype)
     out = module.attention_forward(query, key, value, is_causal)[0]
     return out
 
@@ -821,7 +821,7 @@ def tuned_attention_forward(
 
     use_tk_tma_kernel = (
         config.attention.enable_tk_tma_kernel
-        and query.get_dtype() == torch.bfloat16
+        and query.get_dtype() in (torch.float16, torch.bfloat16)
         and attn_mask is None
         and dropout_p == 0.0
         and scale is None
