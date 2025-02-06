@@ -275,8 +275,8 @@ def can_use_attention_forward(
         supported, reason = func(query, key, value, attn_mask, dropout_p, is_causal, scale=scale)
         if supported:
             return True, ""
-        reasons.append(f"{prefix}: {reason}")
-    return False, "\n".join(reasons)
+        reasons.append((f"{prefix}: {reason}"))
+    return False, " ".join(f"[{reason}]" for reason in reasons)
 
 
 def _attention_forward_wrapper(
