@@ -218,9 +218,13 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
                 mul(att_block, att_block,    1.44269504089f*0.125f);
                 mul(max_vec_scaled, max_vec, 1.44269504089f*0.125f);
             }
-            else                   {
+            else if constexpr (D == 128) {
                 mul(att_block, att_block,    1.44269504089f*0.08838834764f);
                 mul(max_vec_scaled, max_vec, 1.44269504089f*0.08838834764f);
+            }
+            else {
+                mul(att_block, att_block,    1.44269504089f*0.0625f);
+                mul(max_vec_scaled, max_vec, 1.44269504089f*0.0625f);
             }
 
             sub_row(att_block, att_block, max_vec_scaled);
