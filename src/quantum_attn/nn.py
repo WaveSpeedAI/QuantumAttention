@@ -35,7 +35,7 @@ def dynamically_quantize_fp8(t: torch.Tensor, *, reduction_dim=-1) -> Tuple[torc
                 return out
 
 
-_TK_TMA_SUPPORTED_HEAD_DIMS = [64, 128]
+_TK_TMA_SUPPORTED_HEAD_DIMS = [64, 128, 256]
 
 
 def _tk_tma_supported_head_dim(n: Union[int, torch.SymInt]) -> bool:

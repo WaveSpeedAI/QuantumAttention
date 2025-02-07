@@ -827,7 +827,7 @@ def tuned_attention_forward(
         and scale is None
         and query.get_size()[-2] == key.get_size()[-2]
         and k1 == n2
-        and k1 in (64, 128)
+        and k1 in (64, 128, 256)
     )
 
     use_triton_tma_kernel = (

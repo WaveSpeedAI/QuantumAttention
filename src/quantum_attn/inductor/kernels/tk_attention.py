@@ -11,11 +11,6 @@ TK_ATTENTION_SOURCE = """
 #include <cooperative_groups.h>
 #include <iostream>
 
-constexpr int CONSUMER_WARPGROUPS = (3);
-constexpr int PRODUCER_WARPGROUPS = (1);
-constexpr int NUM_WARPGROUPS      = (CONSUMER_WARPGROUPS+PRODUCER_WARPGROUPS);
-constexpr int NUM_WORKERS         = (NUM_WARPGROUPS*kittens::WARPGROUP_WARPS);
-
 using namespace kittens;
 namespace cg = cooperative_groups;
 
@@ -38,6 +33,12 @@ template<> struct fwd_attend_ker_tile_dims<128> {
     constexpr static int tile_width = (128);
     constexpr static int qo_height  = (4*16);
     constexpr static int kv_height  = (8*16);
+    constexpr static int stages     = (2);
+};
+template<> struct fwd_attend_ker_tile_dims<256> {
+    constexpr static int tile_width = (256);
+    constexpr static int qo_height  = (4*16);
+    constexpr static int kv_height  = (4*16);
     constexpr static int stages     = (2);
 };
 
@@ -64,9 +65,12 @@ template<int D> struct fwd_globals {
     const int hr;
 };
 
-template<int D, bool is_causal>
-__global__  __launch_bounds__((NUM_WORKERS)*kittens::WARP_THREADS, 1)
+template<int D, bool is_causal, int CONSUMER_WARPGROUPS, int PRODUCER_WARPGROUPS>
+__global__  __launch_bounds__(((CONSUMER_WARPGROUPS+PRODUCER_WARPGROUPS)*kittens::WARPGROUP_WARPS)*kittens::WARP_THREADS, 1)
 void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
+    constexpr int NUM_WARPGROUPS      = (CONSUMER_WARPGROUPS+PRODUCER_WARPGROUPS);
+    constexpr int NUM_WORKERS         = (NUM_WARPGROUPS*kittens::WARPGROUP_WARPS);
+
     extern __shared__ int __shm[];
     tma_swizzle_allocator al((int*)&__shm[0]);
     int warpid = kittens::warpid(), warpgroupid = warpid/kittens::WARPGROUP_WARPS;
@@ -118,8 +122,8 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     int pipe_idx = K::stages - 1;
 
     if(warpgroupid == NUM_WARPGROUPS-1) {
-        warpgroup::decrease_registers<32>();
-        // warpgroup::producer_registers();
+        // warpgroup::decrease_registers<32>();
+        warpgroup::producer_registers();
 
         int kv_iters;
         if constexpr (is_causal) {
@@ -141,8 +145,8 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         }
     }
     else {
-        warpgroup::increase_registers<160>();
-        // warpgroup::consumer_registers<CONSUMER_WARPGROUPS>();
+        // warpgroup::increase_registers<160>();
+        warpgroup::consumer_registers<CONSUMER_WARPGROUPS>();
 
         rt_fl<16, K::tile_width> o_reg;
 
@@ -155,7 +159,7 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         int kv_iters;
         if constexpr (is_causal) {
             kv_iters = (seq_idx * 4) - 1 + (CONSUMER_WARPGROUPS * 4);
-            kv_iters = (kv_iters/8);
+            kv_iters = (kv_iters/(K::kv_height/kittens::TILE_ROW_DIM<DType>));
         }
         else { kv_iters = kv_blocks - 1; }
 
@@ -169,8 +173,9 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
             warpgroup::mm_ABt(att_block, q_smem[warpgroupid], k_smem[(kv_idx)%K::stages]);
 
             copy(max_vec_last_scaled, max_vec);
-            if constexpr (D == 64) { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.125f); }
-            else                   { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.08838834764f); }
+            if constexpr (D == 64)       { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.125f); }
+            else if constexpr (D == 128) { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.08838834764f); }
+            else                         { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.0625f); }
 
             warpgroup::mma_async_wait();
 
@@ -340,6 +345,11 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
     auto stream = at::cuda::getCurrentCUDAStream().stream();
 
     if (head_dim == 64) {
+        constexpr int CONSUMER_WARPGROUPS = (3);
+        constexpr int PRODUCER_WARPGROUPS = (1);
+        constexpr int NUM_WARPGROUPS      = (CONSUMER_WARPGROUPS+PRODUCER_WARPGROUPS);
+        constexpr int NUM_WORKERS         = (NUM_WARPGROUPS*kittens::WARPGROUP_WARPS);
+
         using q_tile    =         st<DType, fwd_attend_ker_tile_dims<64>::qo_height, fwd_attend_ker_tile_dims<64>::tile_width>;
         using k_tile    =         st<DType, fwd_attend_ker_tile_dims<64>::kv_height, fwd_attend_ker_tile_dims<64>::tile_width>;
         using v_tile    =         st<DType, fwd_attend_ker_tile_dims<64>::kv_height, fwd_attend_ker_tile_dims<64>::tile_width>;
@@ -371,26 +381,31 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
         dim3 grid(num_m_blocks, qo_heads, batch);
 
         if (is_causal) {
-            cudaFuncSetAttribute(
-                fwd_attend_ker<64, true>,
+            CHECK_CUDA_ERROR(cudaFuncSetAttribute(
+                fwd_attend_ker<64, true, CONSUMER_WARPGROUPS, PRODUCER_WARPGROUPS>,
                 cudaFuncAttributeMaxDynamicSharedMemorySize,
                 mem_size
-            );
+            ));
 
-            fwd_attend_ker<64, true><<<grid, (32*NUM_WORKERS), mem_size, stream>>>(g);
+            fwd_attend_ker<64, true, CONSUMER_WARPGROUPS, PRODUCER_WARPGROUPS><<<grid, (32*NUM_WORKERS), mem_size, stream>>>(g);
         }
         else {
-            cudaFuncSetAttribute(
-                fwd_attend_ker<64, false>,
+            CHECK_CUDA_ERROR(cudaFuncSetAttribute(
+                fwd_attend_ker<64, false, CONSUMER_WARPGROUPS, PRODUCER_WARPGROUPS>,
                 cudaFuncAttributeMaxDynamicSharedMemorySize,
                 mem_size
-            );
+            ));
 
-            fwd_attend_ker<64, false><<<grid, (32*NUM_WORKERS), mem_size, stream>>>(g);
+            fwd_attend_ker<64, false, CONSUMER_WARPGROUPS, PRODUCER_WARPGROUPS><<<grid, (32*NUM_WORKERS), mem_size, stream>>>(g);
         }
     }
 
     if (head_dim == 128) {
+        constexpr int CONSUMER_WARPGROUPS = (3);
+        constexpr int PRODUCER_WARPGROUPS = (1);
+        constexpr int NUM_WARPGROUPS      = (CONSUMER_WARPGROUPS+PRODUCER_WARPGROUPS);
+        constexpr int NUM_WORKERS         = (NUM_WARPGROUPS*kittens::WARPGROUP_WARPS);
+
         using q_tile    =         st<DType, fwd_attend_ker_tile_dims<128>::qo_height, fwd_attend_ker_tile_dims<128>::tile_width>;
         using k_tile    =         st<DType, fwd_attend_ker_tile_dims<128>::kv_height, fwd_attend_ker_tile_dims<128>::tile_width>;
         using v_tile    =         st<DType, fwd_attend_ker_tile_dims<128>::kv_height, fwd_attend_ker_tile_dims<128>::tile_width>;
@@ -422,22 +437,78 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
         dim3 grid(num_m_blocks, qo_heads, batch);
 
         if (is_causal) {
-            cudaFuncSetAttribute(
-                fwd_attend_ker<128, true>,
+            CHECK_CUDA_ERROR(cudaFuncSetAttribute(
+                fwd_attend_ker<128, true, CONSUMER_WARPGROUPS, PRODUCER_WARPGROUPS>,
                 cudaFuncAttributeMaxDynamicSharedMemorySize,
                 mem_size
-            );
+            ));
 
-            fwd_attend_ker<128, true><<<grid, (32*NUM_WORKERS), mem_size, stream>>>(g);
+            fwd_attend_ker<128, true, CONSUMER_WARPGROUPS, PRODUCER_WARPGROUPS><<<grid, (32*NUM_WORKERS), mem_size, stream>>>(g);
         }
         else {
-            cudaFuncSetAttribute(
-                fwd_attend_ker<128, false>,
+            CHECK_CUDA_ERROR(cudaFuncSetAttribute(
+                fwd_attend_ker<128, false, CONSUMER_WARPGROUPS, PRODUCER_WARPGROUPS>,
                 cudaFuncAttributeMaxDynamicSharedMemorySize,
                 mem_size
-            );
+            ));
 
-            fwd_attend_ker<128, false><<<grid, (32*NUM_WORKERS), mem_size, stream>>>(g);
+            fwd_attend_ker<128, false, CONSUMER_WARPGROUPS, PRODUCER_WARPGROUPS><<<grid, (32*NUM_WORKERS), mem_size, stream>>>(g);
+        }
+    }
+
+    if (head_dim == 256) {
+        constexpr int CONSUMER_WARPGROUPS = (2);
+        constexpr int PRODUCER_WARPGROUPS = (1);
+        constexpr int NUM_WARPGROUPS      = (CONSUMER_WARPGROUPS+PRODUCER_WARPGROUPS);
+        constexpr int NUM_WORKERS         = (NUM_WARPGROUPS*kittens::WARPGROUP_WARPS);
+
+        using q_tile    =         st<DType, fwd_attend_ker_tile_dims<256>::qo_height, fwd_attend_ker_tile_dims<256>::tile_width>;
+        using k_tile    =         st<DType, fwd_attend_ker_tile_dims<256>::kv_height, fwd_attend_ker_tile_dims<256>::tile_width>;
+        using v_tile    =         st<DType, fwd_attend_ker_tile_dims<256>::kv_height, fwd_attend_ker_tile_dims<256>::tile_width>;
+        // using l_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<256>::qo_height, fwd_attend_ker_tile_dims<256>::tile_width>>;
+        using o_tile    =         st<DType, fwd_attend_ker_tile_dims<256>::qo_height, fwd_attend_ker_tile_dims<256>::tile_width>;
+
+        using q_global = gl<DType,  -1, -1, -1, -1, q_tile>;
+        using k_global = gl<DType,  -1, -1, -1, -1, k_tile>;
+        using v_global = gl<DType,  -1, -1, -1, -1, v_tile>;
+        // using l_global = gl<float, -1, -1, -1, -1, l_col_vec>;
+        using o_global = gl<DType,  -1, -1, -1, -1, o_tile>;
+
+        using globals      = fwd_globals<256>;
+
+        q_global qg_arg{d_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len), 256U};
+        k_global kg_arg{d_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len), 256U};
+        v_global vg_arg{d_v, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len), 256U};
+        // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U,   static_cast<unsigned int>(seq_len)};
+        o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len), 256U};
+
+        globals g{qg_arg, kg_arg, vg_arg/* , lg_arg */, og_arg, static_cast<int>(seq_len), static_cast<int>(hr)};
+
+        auto mem_size = kittens::MAX_SHARED_MEMORY;
+        // auto threads  = NUM_WORKERS * kittens::WARP_THREADS;
+
+        // TORCH_CHECK(seq_len % (CONSUMER_WARPGROUPS*kittens::TILE_DIM*4) == 0, "sequence length must be divisible by 192");
+        constexpr int block_size_m = CONSUMER_WARPGROUPS*kittens::TILE_ROW_DIM<DType>*4;
+        int num_m_blocks = (seq_len + block_size_m - 1) / block_size_m;
+        dim3 grid(num_m_blocks, qo_heads, batch);
+
+        if (is_causal) {
+            CHECK_CUDA_ERROR(cudaFuncSetAttribute(
+                fwd_attend_ker<256, true, CONSUMER_WARPGROUPS, PRODUCER_WARPGROUPS>,
+                cudaFuncAttributeMaxDynamicSharedMemorySize,
+                mem_size
+            ));
+
+            fwd_attend_ker<256, true, CONSUMER_WARPGROUPS, PRODUCER_WARPGROUPS><<<grid, (32*NUM_WORKERS), mem_size, stream>>>(g);
+        }
+        else {
+            CHECK_CUDA_ERROR(cudaFuncSetAttribute(
+                fwd_attend_ker<256, false, CONSUMER_WARPGROUPS, PRODUCER_WARPGROUPS>,
+                cudaFuncAttributeMaxDynamicSharedMemorySize,
+                mem_size
+            ));
+
+            fwd_attend_ker<256, false, CONSUMER_WARPGROUPS, PRODUCER_WARPGROUPS><<<grid, (32*NUM_WORKERS), mem_size, stream>>>(g);
         }
     }
 
@@ -468,6 +539,7 @@ def load_tk_attention_module(dtype):
         "-lineinfo",
         "-O3",
         "-Xcudafe --diag_suppress=2361",
+        "--threads=4",
         "-DNDEBUG",
         "-DKITTENS_HOPPER",
     ]
