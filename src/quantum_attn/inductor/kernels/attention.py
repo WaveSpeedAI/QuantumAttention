@@ -12,16 +12,17 @@ from torch._inductor.codegen.triton import TritonOverrides
 from torch._inductor.kernel.mm_common import mm_args
 from torch._inductor.runtime.runtime_utils import next_power_of_2
 from torch._inductor.select_algorithm import autotune_select_algorithm, ExternKernelChoice, TritonTemplate
-from torch._inductor.utils import ceildiv as cdiv, is_dynamic, use_max_autotune
+from torch._inductor.utils import ceildiv as cdiv, is_dynamic, use_aten_gemm_kernels, use_max_autotune
 from torch._inductor.virtualized import V
 
 from quantum_attn import config
 
 from quantum_attn.utils import checks
+from ...tk.attention import load_tk_attention_module
 
 from .mm_common import acc_type, get_device_shared_memory, mm_options, reduce_block_size_for_cuda, require_dense_memory
-from .tk_attention import load_tk_attention_module
 
+aten = torch.ops.aten
 quantum_attn_ops = torch.ops.quantum_attn
 
 
@@ -51,6 +52,30 @@ def tk_attention_forward_kernel(
 tk_attention_forward = ExternKernelChoice(
     tk_attention_forward_kernel,
     name="quantum_attn_tk_attention_forward",
+    has_out_variant=False,
+)
+
+
+def aten_sdpa_forward_kernel(
+    query,
+    key,
+    value,
+    attn_mask=None,
+    dropout_p=0.0,
+    is_causal=False,
+    *,
+    scale=None,
+):
+    out = aten.scaled_dot_product_attention(
+        query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
+    )
+    out = out.contiguous()
+    return out
+
+
+aten_sdpa_forward = ExternKernelChoice(
+    aten_sdpa_forward_kernel,
+    name="quantum_attn_aten_sdpa_forward",
     has_out_variant=False,
 )
 
@@ -825,7 +850,6 @@ def tuned_attention_forward(
         and attn_mask is None
         and dropout_p == 0.0
         and scale is None
-        and query.get_size()[-2] == key.get_size()[-2]
         and k1 == n2
         and k1 in (64, 128, 256)
     )
@@ -840,6 +864,8 @@ def tuned_attention_forward(
         and k1 == n2
         and k1 in (64, 128, 256)
     )
+
+    use_aten_sdpa_kernel = use_aten_gemm_kernels() and query.get_dtype() in (torch.float16, torch.bfloat16)
 
     query, key, value = (ir.ExternKernel.realize_input(x) for x in (query, key, value))
     if use_tk_tma_kernel:
@@ -901,6 +927,14 @@ def tuned_attention_forward(
     if use_triton_tma_kernel:
         generate_attention_template_choices(
             choices, *args, layout2=layout2, enable_max_autotune=use_max_autotune(), **kwargs
+        )
+    if use_aten_sdpa_kernel:
+        choices.append(
+            aten_sdpa_forward.bind(
+                args,
+                layout=layout2,
+                **kwargs,
+            )
         )
     if not use_max_autotune():
         choices = choices[:1]

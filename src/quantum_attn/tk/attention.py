@@ -4,7 +4,7 @@ import os
 import torch
 from torch.utils.cpp_extension import load_inline
 
-from . import tk_utils
+from . import utils
 
 TK_ATTENTION_SOURCE = """
 #include "kittens.cuh"
@@ -21,6 +21,24 @@ typedef bf16 DType;
 #else
 #error "Unsupported dtype"
 #endif
+
+__device__ static inline float fast_exp2f(float x) {
+    float y;
+    asm volatile ( "ex2.approx.ftz.f32 %0, %1; " : "=f"(y) : "f"(x));
+    return y;
+}
+
+namespace kittens {
+namespace base_ops {
+
+struct fast_exp2 {
+    template<typename T> static __device__ inline T op(const T &x) { return fast_exp2f(x); }
+};
+template<> __device__ inline float  fast_exp2::op<float> (const float &x ) { return fast_exp2f(x);                        }
+template<> __device__ inline float2 fast_exp2::op<float2>(const float2 &x) { return float2{fast_exp2f(x.x), fast_exp2f(x.y)}; }
+
+}
+}
 
 template<int D> struct fwd_attend_ker_tile_dims {};
 template<> struct fwd_attend_ker_tile_dims<64> {
@@ -229,8 +247,10 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
             sub_row(att_block, att_block, max_vec_scaled);
             exp2(att_block, att_block);
+            // unary_map<base_ops::fast_exp2>(att_block, att_block);
             sub(max_vec_last_scaled, max_vec_last_scaled, max_vec_scaled);
             exp2(max_vec_last_scaled,       max_vec_last_scaled);
+            // unary_op<base_ops::fast_exp2>(max_vec_last_scaled, max_vec_last_scaled);
             mul(norm_vec,            norm_vec,     max_vec_last_scaled);
             row_sum(norm_vec,  att_block, norm_vec);
             // add(att_block, att_block, 0.f);
@@ -291,7 +311,8 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
     TORCH_CHECK(v.dim() == 4, "V tensor must have 4 dimensions");
 
     auto batch    = q.size(0);
-    auto seq_len  = q.size(2);
+    auto seq_len_q  = q.size(2);
+    auto seq_len_kv = k.size(2);
     auto head_dim = q.size(3);
     auto is_causal = causal;
     auto qo_heads = q.size(1);
@@ -302,9 +323,9 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
     TORCH_CHECK(k.size(0) == batch, "K batch dimension - idx 0 - must match for all inputs");
     TORCH_CHECK(v.size(0) == batch, "V batch dimension - idx 0 - must match for all inputs");
 
-    TORCH_CHECK(q.size(2) == seq_len, "Q sequence length dimension - idx 2 - must match for all inputs");
-    TORCH_CHECK(k.size(2) == seq_len, "K sequence length dimension - idx 2 - must match for all inputs");
-    TORCH_CHECK(v.size(2) == seq_len, "V sequence length dimension - idx 2 - must match for all inputs");
+    TORCH_CHECK(q.size(2) == seq_len_q, "Q sequence length dimension - idx 2 - must match for all inputs");
+    TORCH_CHECK(k.size(2) == seq_len_kv, "K sequence length dimension - idx 2 - must match for all inputs");
+    TORCH_CHECK(v.size(2) == seq_len_kv, "V sequence length dimension - idx 2 - must match for all inputs");
 
     TORCH_CHECK(q.size(3) == head_dim, "Q head dimension - idx 3 - must match for all non-vector inputs");
     TORCH_CHECK(k.size(3) == head_dim, "K head dimension - idx 3 - must match for all non-vector inputs");
@@ -331,12 +352,12 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
     // for the returned outputs
     torch::Tensor o     = torch::empty({static_cast<uint>(batch),
                                         static_cast<uint>(qo_heads),
-                                        static_cast<uint>(seq_len),
+                                        static_cast<uint>(seq_len_q),
                                         static_cast<uint>(head_dim)}, v.options().memory_format(at::MemoryFormat::Contiguous));
 
     // torch::Tensor l_vec = torch::empty({static_cast<uint>(batch),
     //                                     static_cast<uint>(qo_heads),
-    //                                     static_cast<uint>(seq_len),
+    //                                     static_cast<uint>(seq_len_q),
     //                                     static_cast<uint>(1)},
     //                                     torch::TensorOptions().dtype(torch::kFloat).device(q.device()).memory_format(at::MemoryFormat::Contiguous));
 
@@ -368,20 +389,19 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
 
         using globals      = fwd_globals<64>;
 
-        q_global qg_arg{d_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len), 64U};
-        k_global kg_arg{d_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len), 64U};
-        v_global vg_arg{d_v, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len), 64U};
-        // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U,  static_cast<unsigned int>(seq_len)};
-        o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len), 64U};
+        q_global qg_arg{d_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), 64U};
+        k_global kg_arg{d_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), 64U};
+        v_global vg_arg{d_v, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), 64U};
+        // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U,  static_cast<unsigned int>(seq_len_q)};
+        o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), 64U};
 
-        globals g{qg_arg, kg_arg, vg_arg/* , lg_arg */, og_arg, static_cast<int>(seq_len), static_cast<int>(hr)};
+        globals g{qg_arg, kg_arg, vg_arg/* , lg_arg */, og_arg, static_cast<int>(seq_len_kv), static_cast<int>(hr)};
 
         auto mem_size = kittens::MAX_SHARED_MEMORY;
         // auto threads  = NUM_WORKERS * kittens::WARP_THREADS;
 
-        // TORCH_CHECK(seq_len % (CONSUMER_WARPGROUPS*kittens::TILE_DIM*4) == 0, "sequence length must be divisible by 192");
         constexpr int block_size_m = CONSUMER_WARPGROUPS*kittens::TILE_ROW_DIM<DType>*4;
-        int num_m_blocks = (seq_len + block_size_m - 1) / block_size_m;
+        int num_m_blocks = (seq_len_q + block_size_m - 1) / block_size_m;
         dim3 grid(num_m_blocks, qo_heads, batch);
 
         if (is_causal) {
@@ -424,20 +444,19 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
 
         using globals      = fwd_globals<128>;
 
-        q_global qg_arg{d_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len), 128U};
-        k_global kg_arg{d_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len), 128U};
-        v_global vg_arg{d_v, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len), 128U};
-        // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U,   static_cast<unsigned int>(seq_len)};
-        o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len), 128U};
+        q_global qg_arg{d_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), 128U};
+        k_global kg_arg{d_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), 128U};
+        v_global vg_arg{d_v, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), 128U};
+        // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U,   static_cast<unsigned int>(seq_len_q)};
+        o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), 128U};
 
-        globals g{qg_arg, kg_arg, vg_arg/* , lg_arg */, og_arg, static_cast<int>(seq_len), static_cast<int>(hr)};
+        globals g{qg_arg, kg_arg, vg_arg/* , lg_arg */, og_arg, static_cast<int>(seq_len_kv), static_cast<int>(hr)};
 
         auto mem_size = kittens::MAX_SHARED_MEMORY;
         // auto threads  = NUM_WORKERS * kittens::WARP_THREADS;
 
-        // TORCH_CHECK(seq_len % (CONSUMER_WARPGROUPS*kittens::TILE_DIM*4) == 0, "sequence length must be divisible by 192");
         constexpr int block_size_m = CONSUMER_WARPGROUPS*kittens::TILE_ROW_DIM<DType>*4;
-        int num_m_blocks = (seq_len + block_size_m - 1) / block_size_m;
+        int num_m_blocks = (seq_len_q + block_size_m - 1) / block_size_m;
         dim3 grid(num_m_blocks, qo_heads, batch);
 
         if (is_causal) {
@@ -480,20 +499,19 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
 
         using globals      = fwd_globals<256>;
 
-        q_global qg_arg{d_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len), 256U};
-        k_global kg_arg{d_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len), 256U};
-        v_global vg_arg{d_v, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len), 256U};
-        // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U,   static_cast<unsigned int>(seq_len)};
-        o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len), 256U};
+        q_global qg_arg{d_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), 256U};
+        k_global kg_arg{d_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), 256U};
+        v_global vg_arg{d_v, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), 256U};
+        // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U,   static_cast<unsigned int>(seq_len_q)};
+        o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), 256U};
 
-        globals g{qg_arg, kg_arg, vg_arg/* , lg_arg */, og_arg, static_cast<int>(seq_len), static_cast<int>(hr)};
+        globals g{qg_arg, kg_arg, vg_arg/* , lg_arg */, og_arg, static_cast<int>(seq_len_kv), static_cast<int>(hr)};
 
         auto mem_size = kittens::MAX_SHARED_MEMORY;
         // auto threads  = NUM_WORKERS * kittens::WARP_THREADS;
 
-        // TORCH_CHECK(seq_len % (CONSUMER_WARPGROUPS*kittens::TILE_DIM*4) == 0, "sequence length must be divisible by 192");
         constexpr int block_size_m = CONSUMER_WARPGROUPS*kittens::TILE_ROW_DIM<DType>*4;
-        int num_m_blocks = (seq_len + block_size_m - 1) / block_size_m;
+        int num_m_blocks = (seq_len_q + block_size_m - 1) / block_size_m;
         dim3 grid(num_m_blocks, qo_heads, batch);
 
         if (is_causal) {
@@ -566,7 +584,7 @@ def load_tk_attention_module(dtype):
             extra_cflags=["-std=c++20", "-O3", "-DNDEBUG"],
             extra_cuda_cflags=extra_cuda_cflags,
             extra_ldflags=["-lcuda", "-lcudart"],
-            extra_include_paths=[tk_utils.get_tk_include_dir()],
+            extra_include_paths=[utils.get_tk_include_dir()],
             functions=["attention_forward"],
             verbose=True,
         )

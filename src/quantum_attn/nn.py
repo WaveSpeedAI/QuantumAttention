@@ -95,17 +95,17 @@ def _validate_tk_tma_input(
         raise ValueError("Expected query, key, and value to be on a CUDA device")
     if query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
         raise ValueError("NYI: query, key, and value must be 4D tensors")
+    if key.size(-2) != value.size(-2):
+        raise ValueError(
+            f"Expect key and value to have the same sequence length "
+            f"but got Sk={key.size(-2)} and Sv={value.size(-2)}. "
+        )
     if value.size(-1) != query.size(-1):
         raise ValueError("NYI: query and value must have the same embedding dimension")
     if query.size(-3) != key.size(-3):
         raise ValueError(
             f"Expect query and key/value to have the same number of heads "
             f"but got Hq={query.size(-3)} and Hkv={key.size(-3)}. "
-        )
-    if query.size(-2) != key.size(-2):
-        raise ValueError(
-            f"Expect query and key to have the same sequence length "
-            f"but got Sq={query.size(-2)} and Skv={key.size(-2)}. "
         )
 
     if not _tk_tma_supported_head_dim(query.size(-1)):
@@ -186,6 +186,11 @@ def _validate_triton_tma_sdpa_input(
         raise ValueError("Expected query, key, and value to be on a CUDA device")
     if query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
         raise ValueError("NYI: query, key, and value must be 4D tensors")
+    if key.size(-2) != value.size(-2):
+        raise ValueError(
+            f"Expect key and value to have the same sequence length "
+            f"but got Sk={key.size(-2)} and Sv={value.size(-2)}. "
+        )
     if value.size(-1) != query.size(-1):
         raise ValueError("NYI: query and value must have the same embedding dimension")
     if query.size(-3) != key.size(-3):
@@ -300,6 +305,11 @@ def attention_forward(
     *,
     scale: Optional[float] = None,
 ) -> Tensor:
+    if not torch._dynamo.is_dynamo_supported():
+        raise RuntimeError("attention_forward requires dynamo support")
+    if not torch._dynamo.is_inductor_supported():
+        raise RuntimeError("attention_forward requires inductor support")
+
     supported, reason = can_use_attention_forward(
         query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
     )
@@ -308,6 +318,14 @@ def attention_forward(
 
     # if scale is None:
     #     scale = 1.0 / math.sqrt(query.size(-1))
+
+    from torch._subclasses.fake_tensor import is_fake
+
+    if any(is_fake(x) for x in (query, key, value, attn_mask)):
+        out = _attention_forward_wrapper(
+            query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
+        )
+        return out
 
     if torch.compiler.is_dynamo_compiling():
         # mark head_dim and number of heads to be static
@@ -324,11 +342,6 @@ def attention_forward(
             query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
         )
         return out
-
-    if not torch._dynamo.is_dynamo_supported():
-        raise RuntimeError("attention_forward requires dynamo support")
-    if not torch._dynamo.is_inductor_supported():
-        raise RuntimeError("attention_forward requires inductor support")
 
     with _set_compilation_env():
         with torch._dynamo.utils.disable_cache_limit():
@@ -395,7 +408,12 @@ def fp8_attention_forward(
     scale_q: Optional[torch.Tensor] = None,
     scale_k: Optional[torch.Tensor] = None,
 ) -> Tensor:
-    supported, reason = can_use_triton_tma_attention_forward(
+    if not torch._dynamo.is_dynamo_supported():
+        raise RuntimeError("fp8_attention_forward requires dynamo support")
+    if not torch._dynamo.is_inductor_supported():
+        raise RuntimeError("fp8_attention_forward requires inductor support")
+
+    supported, reason = can_use_attention_forward(
         query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
     )
     if not supported:
@@ -403,6 +421,14 @@ def fp8_attention_forward(
 
     # if scale is None:
     #     scale = 1.0 / math.sqrt(query.size(-1))
+
+    from torch._subclasses.fake_tensor import is_fake
+
+    if any(is_fake(x) for x in (query, key, value, attn_mask, scale_q, scale_k)):
+        out = _attention_forward_wrapper(
+            query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
+        )
+        return out
 
     if torch.compiler.is_dynamo_compiling():
         # mark head_dim and number of heads to be static
@@ -435,11 +461,6 @@ def fp8_attention_forward(
             scale_k=scale_k,
         )
         return out
-
-    if not torch._dynamo.is_dynamo_supported():
-        raise RuntimeError("fp8_attention_forward requires dynamo support")
-    if not torch._dynamo.is_inductor_supported():
-        raise RuntimeError("fp8_attention_forward requires inductor support")
 
     with _set_compilation_env():
         with torch._dynamo.utils.disable_cache_limit():
