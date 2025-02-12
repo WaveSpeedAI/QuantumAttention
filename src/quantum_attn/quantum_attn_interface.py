@@ -2,7 +2,6 @@ from typing import Optional
 
 import torch
 import torch.nn.functional as F
-from torch.overrides import wrap_torch_function
 
 from quantum_attn.nn import (
     attention_forward,
@@ -47,8 +46,14 @@ def attn_func(
     )
 
 
-@wrap_torch_function(sdpa_dispatcher)
-def attn_func_with_fallback(
+torch.library.define(
+    "quantum_attn::attn_func_with_fallback",
+    "(Tensor query, Tensor key, Tensor value, Tensor? attn_mask=None, float dropout_p=0.0, bool is_causal=False, *, float? scale=None) -> Tensor",
+)
+
+
+@torch.library.impl("quantum_attn::attn_func_with_fallback", ["CompositeImplicitAutograd"])
+def _(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -58,9 +63,10 @@ def attn_func_with_fallback(
     *,
     scale: float = None,
 ) -> torch.Tensor:
-    if can_use_attention_forward(
+    supported, reason = can_use_attention_forward(
         query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
-    )[0]:
+    )
+    if supported:
         return attn_func(
             query,
             key,
@@ -80,6 +86,9 @@ def attn_func_with_fallback(
         is_causal=is_causal,
         scale=scale,
     )
+
+
+attn_func_with_fallback = torch.ops.quantum_attn.attn_func_with_fallback
 
 
 def fp8_attn_func(
@@ -107,8 +116,14 @@ def fp8_attn_func(
     )
 
 
-@wrap_torch_function(sdpa_dispatcher)
-def fp8_attn_func_with_fallback(
+torch.library.define(
+    "quantum_attn::fp8_attn_func_with_fallback",
+    "(Tensor query, Tensor key, Tensor value, Tensor? attn_mask=None, float dropout_p=0.0, bool is_causal=False, *, float? scale=None) -> Tensor",
+)
+
+
+@torch.library.impl("quantum_attn::fp8_attn_func_with_fallback", ["CompositeImplicitAutograd"])
+def _(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -140,3 +155,6 @@ def fp8_attn_func_with_fallback(
         is_causal=is_causal,
         scale=scale,
     )
+
+
+fp8_attn_func_with_fallback = torch.ops.quantum_attn.fp8_attn_func_with_fallback

@@ -52,64 +52,63 @@ def _validate_tk_tma_input(
     scale=None,
     scale_q=None,
     scale_k=None,
-):
+) -> Tuple[bool, str]:
     if attn_mask is not None:
-        raise ValueError("NYI: attn_mask must be None")
+        return False, "NYI: attn_mask must be None"
     if dropout_p != 0.0:
-        raise ValueError("NYI: dropout_p must be 0.0")
+        return False, "NYI: dropout_p must be 0.0"
     if scale is not None:
-        raise ValueError("NYI: scale must be None")
+        return False, "NYI: scale must be None"
     if scale_q is None:
         if scale_k is not None:
-            raise ValueError("scale_k must be None if scale_q is None")
+            return False, "scale_k must be None if scale_q is None"
         if query.dtype != key.dtype or query.dtype != value.dtype:
-            raise ValueError(
-                f"Expected query, key, and value to have the same dtype, "
-                f"but got query.dtype: {query.dtype}, key.dtype: {key.dtype}, "
-                f"and value.dtype: {value.dtype} instead."
+            return (
+                False,
+                f"Expected query, key, and value to have the same dtype, but got query.dtype: {query.dtype}, key.dtype: {key.dtype}, and value.dtype: {value.dtype} instead.",
             )
         if query.dtype not in (torch.float16, torch.bfloat16):
-            raise ValueError(
-                f"Expected query, key, and value to have dtype torch.float16 or torch.bfloat16, "
-                f"but got query.dtype: {query.dtype} instead."
+            return (
+                False,
+                f"Expected query, key, and value to have dtype torch.float16 or torch.bfloat16, but got query.dtype: {query.dtype} instead.",
             )
     else:
-        raise ValueError("NYI: scale_q and scale_k must be None")
+        return False, "NYI: scale_q and scale_k must be None"
     if query.dtype != key.dtype:
-        raise ValueError(
-            f"Expected query and key to have the same dtype, "
-            f"but got query.dtype: {query.dtype}, key.dtype: {key.dtype} instead."
+        return (
+            False,
+            f"Expected query and key to have the same dtype, but got query.dtype: {query.dtype}, key.dtype: {key.dtype} instead.",
         )
     if value.dtype not in (torch.float16, torch.bfloat16):
-        raise ValueError(
-            f"Expected value to have dtype torch.float16 or torch.bfloat16, "
-            f"but got value.dtype: {value.dtype} instead."
+        return (
+            False,
+            f"Expected value to have dtype torch.float16 or torch.bfloat16, but got value.dtype: {value.dtype} instead.",
         )
     if query.device != key.device or query.device != value.device:
-        raise ValueError(
-            f"Expected query, key, and value to have the same device type, "
-            f"but got query.device: {query.device}, key.device: {key.device}, "
-            f"and value.device: {value.device} instead."
+        return (
+            False,
+            f"Expected query, key, and value to have the same device type, but got query.device: {query.device}, key.device: {key.device}, and value.device: {value.device} instead.",
         )
     if query.device.type != "cuda":
-        raise ValueError("Expected query, key, and value to be on a CUDA device")
+        return False, "Expected query, key, and value to be on a CUDA device"
     if query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
-        raise ValueError("NYI: query, key, and value must be 4D tensors")
+        return False, "NYI: query, key, and value must be 4D tensors"
     if key.size(-2) != value.size(-2):
-        raise ValueError(
-            f"Expect key and value to have the same sequence length "
-            f"but got Sk={key.size(-2)} and Sv={value.size(-2)}. "
+        return (
+            False,
+            f"Expect key and value to have the same sequence length but got Sk={key.size(-2)} and Sv={value.size(-2)}.",
         )
     if value.size(-1) != query.size(-1):
-        raise ValueError("NYI: query and value must have the same embedding dimension")
+        return False, "NYI: query and value must have the same embedding dimension"
     if query.size(-3) != key.size(-3):
-        raise ValueError(
-            f"Expect query and key/value to have the same number of heads "
-            f"but got Hq={query.size(-3)} and Hkv={key.size(-3)}. "
+        return (
+            False,
+            f"Expect query and key/value to have the same number of heads but got Hq={query.size(-3)} and Hkv={key.size(-3)}.",
         )
-
     if not _tk_tma_supported_head_dim(query.size(-1)):
-        raise ValueError(f"Unsupported head dimension: {query.size(-1)}")
+        return False, f"Unsupported head dimension: {query.size(-1)}"
+
+    return True, ""
 
 
 _TRITON_TMA_SDPA_SUPPORTED_HEAD_DIMS = [64, 128, 256]
@@ -130,80 +129,91 @@ def _validate_triton_tma_sdpa_input(
     scale=None,
     scale_q=None,
     scale_k=None,
-):
+) -> Tuple[bool, str]:
     if attn_mask is not None:
-        raise ValueError("NYI: attn_mask must be None")
+        return False, "NYI: attn_mask must be None"
     if dropout_p != 0.0:
-        raise ValueError("NYI: dropout_p must be 0.0")
+        return False, "NYI: dropout_p must be 0.0"
     if scale_q is None:
         if scale_k is not None:
-            raise ValueError("scale_k must be None if scale_q is None")
+            return False, "scale_k must be None if scale_q is None"
         if query.dtype != key.dtype or query.dtype != value.dtype:
-            raise ValueError(
-                f"Expected query, key, and value to have the same dtype, "
-                f"but got query.dtype: {query.dtype}, key.dtype: {key.dtype}, "
-                f"and value.dtype: {value.dtype} instead."
+            return (
+                False,
+                f"Expected query, key, and value to have the same dtype, but got query.dtype: {query.dtype}, key.dtype: {key.dtype}, and value.dtype: {value.dtype} instead.",
             )
         if query.dtype not in (torch.float16, torch.bfloat16):
-            raise ValueError(
-                f"Expected query, key, and value to have dtype torch.float16 or torch.bfloat16, "
-                f"but got query.dtype: {query.dtype} instead."
+            return (
+                False,
+                f"Expected query, key, and value to have dtype torch.float16 or torch.bfloat16, but got query.dtype: {query.dtype} instead.",
             )
     else:
         if scale_k is None:
-            raise ValueError("scale_q must be None if scale_k is None")
+            return False, "scale_q must be None if scale_k is None"
         if query.dtype != torch.float8_e4m3fn:
-            raise ValueError(
-                f"Expected query to have dtype torch.float8_e4m3fn, " f"but got query.dtype: {query.dtype} instead."
+            return (
+                False,
+                f"Expected query to have dtype torch.float8_e4m3fn, but got query.dtype: {query.dtype} instead.",
             )
         if scale_q.shape != query.shape[:-1]:
-            raise ValueError(
-                f"Expected scale_q to have shape equal to query.shape[:-1], "
-                f"but got scale_q.shape: {scale_q.shape}, query.shape: {query.shape} instead."
+            return (
+                False,
+                f"Expected scale_q to have shape equal to query.shape[:-1], but got scale_q.shape: {scale_q.shape}, query.shape: {query.shape} instead.",
             )
         if scale_k.shape != key.shape[:-1]:
-            raise ValueError(
-                f"Expected scale_k to have shape equal to key.shape[:-1], "
-                f"but got scale_k.shape: {scale_k.shape}, key.shape: {key.shape} instead."
+            return (
+                False,
+                f"Expected scale_k to have shape equal to key.shape[:-1], but got scale_k.shape: {scale_k.shape}, key.shape: {key.shape} instead.",
             )
     if query.dtype != key.dtype:
-        raise ValueError(
-            f"Expected query and key to have the same dtype, "
-            f"but got query.dtype: {query.dtype}, key.dtype: {key.dtype} instead."
+        return (
+            False,
+            f"Expected query and key to have the same dtype, but got query.dtype: {query.dtype}, key.dtype: {key.dtype} instead.",
         )
     if value.dtype not in (torch.float16, torch.bfloat16):
-        raise ValueError(
-            f"Expected value to have dtype torch.float16 or torch.bfloat16, "
-            f"but got value.dtype: {value.dtype} instead."
+        return (
+            False,
+            f"Expected value to have dtype torch.float16 or torch.bfloat16, but got value.dtype: {value.dtype} instead.",
         )
     if query.device != key.device or query.device != value.device:
-        raise ValueError(
-            f"Expected query, key, and value to have the same device type, "
-            f"but got query.device: {query.device}, key.device: {key.device}, "
-            f"and value.device: {value.device} instead."
+        return (
+            False,
+            f"Expected query, key, and value to have the same device type, but got query.device: {query.device}, key.device: {key.device}, and value.device: {value.device} instead.",
         )
     if query.device.type != "cuda":
-        raise ValueError("Expected query, key, and value to be on a CUDA device")
+        return False, "Expected query, key, and value to be on a CUDA device"
     if query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
-        raise ValueError("NYI: query, key, and value must be 4D tensors")
+        return False, "NYI: query, key, and value must be 4D tensors"
     if key.size(-2) != value.size(-2):
-        raise ValueError(
-            f"Expect key and value to have the same sequence length "
-            f"but got Sk={key.size(-2)} and Sv={value.size(-2)}. "
+        return (
+            False,
+            f"Expect key and value to have the same sequence length but got Sk={key.size(-2)} and Sv={value.size(-2)}.",
         )
     if value.size(-1) != query.size(-1):
-        raise ValueError("NYI: query and value must have the same embedding dimension")
+        return False, "NYI: query and value must have the same embedding dimension"
     if query.size(-3) != key.size(-3):
-        raise ValueError(
-            f"Expect query and key/value to have the same number of heads "
-            f"but got Hq={query.size(-3)} and Hkv={key.size(-3)}. "
+        return (
+            False,
+            f"Expect query and key/value to have the same number of heads but got Hq={query.size(-3)} and Hkv={key.size(-3)}.",
         )
-
     if not _triton_tma_sdpa_supported_head_dim(query.size(-1)):
-        raise ValueError(f"Unsupported head dimension: {query.size(-1)}")
+        return False, f"Unsupported head dimension: {query.size(-1)}"
+
+    return True, ""
 
 
-def ca_use_tk_tma_attention_forward(
+@torch.compiler.assume_constant_result
+def _pre_check_can_use_tk_tma_attention_forward(device):
+    if device.type != "cuda":
+        return False, f"Expected device to be on a CUDA device, but got device: {device} instead."
+    if not config.attention.enable_tk_tma_kernel:
+        return False, "TK TMA kernel is disabled"
+    if not checks.cuda_capability_compare("ge", 9, 0, device=device):
+        return False, "Minimum CUDA capability of 9.0 is required"
+    return True, ""
+
+
+def can_use_tk_tma_attention_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -213,17 +223,29 @@ def ca_use_tk_tma_attention_forward(
     *,
     scale: Optional[float] = None,
 ) -> Tuple[bool, str]:
-    if not config.attention.enable_tk_tma_kernel:
-        return False, "TK TMA kernel is disabled"
+    supported, reason = _pre_check_can_use_tk_tma_attention_forward(device=query.device)
+    if not supported:
+        return False, reason
 
-    if not checks.cuda_capability_compare("ge", 9, 0, device=query.device):
+    valid, reason = _validate_tk_tma_input(query, key, value, attn_mask, dropout_p, is_causal, scale)
+    if not valid:
+        return False, reason
+
+    return True, ""
+
+
+@torch.compiler.assume_constant_result
+def _pre_check_can_use_triton_tma_attention_forward(device):
+    if device.type != "cuda":
+        return False, f"Expected device to be on a CUDA device, but got device: {device} instead."
+    if not config.attention.enable_triton_tma_kernel:
+        return False, "Triton TMA kernel is disabled"
+    if not checks.cuda_capability_compare("ge", 9, 0, device=device):
         return False, "Minimum CUDA capability of 9.0 is required"
-
-    try:
-        _validate_tk_tma_input(query, key, value, attn_mask, dropout_p, is_causal, scale)
-    except ValueError as e:
-        return False, str(e)
-
+    if not checks.torch_version_compare("ge", "2.7.0"):
+        return False, "Minimum PyTorch version of 2.7.0 is required"
+    if not checks.has_triton_tma_support():
+        return False, "Triton TMA support is required"
     return True, ""
 
 
@@ -237,22 +259,13 @@ def can_use_triton_tma_attention_forward(
     *,
     scale: Optional[float] = None,
 ) -> Tuple[bool, str]:
-    if not config.attention.enable_triton_tma_kernel:
-        return False, "Triton TMA kernel is disabled"
+    supported, reason = _pre_check_can_use_triton_tma_attention_forward(device=query.device)
+    if not supported:
+        return False, reason
 
-    if not checks.cuda_capability_compare("ge", 9, 0, device=query.device):
-        return False, "Minimum CUDA capability of 9.0 is required"
-
-    if not checks.torch_version_compare("ge", "2.7.0"):
-        return False, "Minimum PyTorch version of 2.7.0 is required"
-
-    if not checks.has_triton_tma_support():
-        return False, "Triton TMA support is required"
-
-    try:
-        _validate_triton_tma_sdpa_input(query, key, value, attn_mask, dropout_p, is_causal, scale)
-    except ValueError as e:
-        return False, str(e)
+    valid, reason = _validate_triton_tma_sdpa_input(query, key, value, attn_mask, dropout_p, is_causal, scale)
+    if not valid:
+        return False, reason
 
     return True, ""
 
@@ -268,7 +281,7 @@ def can_use_attention_forward(
     scale: Optional[float] = None,
 ) -> Tuple[bool, str]:
     prefix_and_funcs = [
-        ("tk_tma", ca_use_tk_tma_attention_forward),
+        ("tk_tma", can_use_tk_tma_attention_forward),
         ("triton_tma_sdpa", can_use_triton_tma_attention_forward),
     ]
     reasons = []
