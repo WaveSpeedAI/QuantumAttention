@@ -270,6 +270,11 @@ def can_use_triton_tma_attention_forward(
     return True, ""
 
 
+@torch.compiler.assume_constant_result
+def _skip_supported_check() -> bool:
+    return config.attention.skip_supported_check
+
+
 def can_use_attention_forward(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -280,6 +285,8 @@ def can_use_attention_forward(
     *,
     scale: Optional[float] = None,
 ) -> Tuple[bool, str]:
+    if _skip_supported_check():
+        return True, ""
     prefix_and_funcs = [
         ("tk_tma", can_use_tk_tma_attention_forward),
         ("triton_tma_sdpa", can_use_triton_tma_attention_forward),

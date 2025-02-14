@@ -56,7 +56,7 @@ tk_attention_forward = ExternKernelChoice(
 )
 
 
-def aten_sdpa_forward_kernel(
+def aten_attention_forward_kernel(
     query,
     key,
     value,
@@ -66,16 +66,52 @@ def aten_sdpa_forward_kernel(
     *,
     scale=None,
 ):
-    out = aten.scaled_dot_product_attention(
-        query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
+    return quantum_attn_ops.attention_forward(
+        query,
+        key,
+        value,
+        attn_mask=attn_mask,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+        scale=scale,
     )
-    out = out.contiguous()
-    return out
 
 
-aten_sdpa_forward = ExternKernelChoice(
-    aten_sdpa_forward_kernel,
-    name="quantum_attn_aten_sdpa_forward",
+aten_attention_forward = ExternKernelChoice(
+    aten_attention_forward_kernel,
+    name="quantum_attn_aten_attention_forward",
+    has_out_variant=False,
+)
+
+
+def aten_fp8_attention_forward_kernel(
+    query,
+    key,
+    value,
+    scale_q,
+    scale_k,
+    attn_mask=None,
+    dropout_p=0.0,
+    is_causal=False,
+    *,
+    scale=None,
+):
+    return quantum_attn_ops.fp8_attention_forward(
+        query,
+        key,
+        value,
+        scale_q,
+        scale_k,
+        attn_mask=attn_mask,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+        scale=scale,
+    )
+
+
+aten_fp8_attention_forward = ExternKernelChoice(
+    aten_fp8_attention_forward_kernel,
+    name="quantum_attn_aten_fp8_attention_forward",
     has_out_variant=False,
 )
 
@@ -847,6 +883,7 @@ def tuned_attention_forward(
     use_tk_tma_kernel = (
         config.attention.enable_tk_tma_kernel
         and query.get_dtype() in (torch.float16, torch.bfloat16)
+        and checks.cuda_capability_compare("ge", 9, 0)
         and attn_mask is None
         and dropout_p == 0.0
         and scale is None
@@ -865,7 +902,7 @@ def tuned_attention_forward(
         and k1 in (64, 128, 256)
     )
 
-    use_aten_sdpa_kernel = use_aten_gemm_kernels() and query.get_dtype() in (torch.float16, torch.bfloat16)
+    use_aten_attention_kernel = use_aten_gemm_kernels()
 
     query, key, value = (ir.ExternKernel.realize_input(x) for x in (query, key, value))
     if use_tk_tma_kernel:
@@ -928,14 +965,23 @@ def tuned_attention_forward(
         generate_attention_template_choices(
             choices, *args, layout2=layout2, enable_max_autotune=use_max_autotune(), **kwargs
         )
-    if use_aten_sdpa_kernel:
-        choices.append(
-            aten_sdpa_forward.bind(
-                args,
-                layout=layout2,
-                **kwargs,
+    if use_aten_attention_kernel:
+        if query.get_dtype() == torch.float8_e4m3fn:
+            choices.append(
+                aten_fp8_attention_forward.bind(
+                    args,
+                    layout=layout2,
+                    **kwargs,
+                )
             )
-        )
+        else:
+            choices.append(
+                aten_attention_forward.bind(
+                    args,
+                    layout=layout2,
+                    **kwargs,
+                )
+            )
     if not use_max_autotune():
         choices = choices[:1]
     return autotune_select_algorithm("quantum_attn_attention_forward", choices, args, layout2)

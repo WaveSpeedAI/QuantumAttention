@@ -24,6 +24,7 @@ class triton:
 
 
 class attention:
+    skip_supported_check = os.getenv("QUANTUM_ATTN_SKIP_SUPPORTED_CHECK") == "1"
     force_eager_fallback = os.getenv("QUANTUM_ATTN_FORCE_EAGER_FALLBACK") == "1"
 
     enable_tk_tma_kernel = os.getenv("QUANTUM_ATTN_ENABLE_TK_TMA_KERNEL", "1") == "1"
