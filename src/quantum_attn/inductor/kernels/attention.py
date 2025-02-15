@@ -982,13 +982,22 @@ def tuned_attention_forward(
 
     choices = []
     if use_tk_tma_kernel:
-        choices.append(
-            tk_attention_forward.bind(
-                args,
-                layout=layout2,
-                **kwargs,
+        if query.get_dtype() == torch.float8_e4m3fn:
+            choices.append(
+                tk_fp8_attention_forward.bind(
+                    args,
+                    layout=layout2,
+                    **kwargs,
+                )
             )
-        )
+        else:
+            choices.append(
+                tk_attention_forward.bind(
+                    args,
+                    layout=layout2,
+                    **kwargs,
+                )
+            )
     if use_triton_tma_kernel:
         generate_attention_template_choices(
             choices, *args, layout2=layout2, enable_max_autotune=use_max_autotune(), **kwargs
