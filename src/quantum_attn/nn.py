@@ -400,8 +400,9 @@ def _fp8_attention_forward_wrapper(
         raise ValueError("scale_q and scale_k must be both provided or both not provided")
 
     if scale_q is None:
-        query, scale_q = dynamically_quantize_fp8(query, reduction_dim=-1)
-        key, scale_k = dynamically_quantize_fp8(key, reduction_dim=-1)
+        reduction_dim = query.dim() - 1
+        query, scale_q = dynamically_quantize_fp8(query, reduction_dim=reduction_dim)
+        key, scale_k = dynamically_quantize_fp8(key, reduction_dim=reduction_dim)
 
     return quantum_attn_ops.fp8_attention_forward(
         query,

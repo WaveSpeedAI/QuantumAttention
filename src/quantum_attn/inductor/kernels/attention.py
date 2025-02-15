@@ -40,10 +40,6 @@ def tk_attention_forward_kernel(
     assert dropout_p == 0.0
     assert scale is None
 
-    query = query.contiguous()
-    key = key.contiguous()
-    value = value.contiguous()
-
     module = load_tk_attention_module(dtype=value.dtype)
     out = module.attention_forward(query, key, value, is_causal)[0]
     return out
@@ -52,6 +48,36 @@ def tk_attention_forward_kernel(
 tk_attention_forward = ExternKernelChoice(
     tk_attention_forward_kernel,
     name="quantum_attn_tk_attention_forward",
+    has_out_variant=False,
+)
+
+
+def tk_fp8_attention_forward_kernel(
+    query,
+    key,
+    value,
+    scale_q,
+    scale_k,
+    attn_mask=None,
+    dropout_p=0.0,
+    is_causal=False,
+    *,
+    scale=None,
+):
+    assert attn_mask is None
+    assert dropout_p == 0.0
+    assert scale is None
+    assert scale_q.dim() + 2 == query.dim()
+    assert scale_k.dim() + 2 == key.dim()
+
+    module = load_tk_attention_module(dtype=value.dtype, is_fp8=True)
+    out = module.fp8_attention_forward(query, key, value, scale_q, scale_k, is_causal)[0]
+    return out
+
+
+tk_fp8_attention_forward = ExternKernelChoice(
+    tk_fp8_attention_forward_kernel,
+    name="quantum_attn_tk_fp8_attention_forward",
     has_out_variant=False,
 )
 
@@ -882,13 +908,15 @@ def tuned_attention_forward(
 
     use_tk_tma_kernel = (
         config.attention.enable_tk_tma_kernel
-        and query.get_dtype() in (torch.float16, torch.bfloat16)
+        and query.get_dtype() in (torch.float16, torch.bfloat16, torch.float8_e4m3fn)
         and checks.cuda_capability_compare("ge", 9, 0)
         and attn_mask is None
         and dropout_p == 0.0
         and scale is None
         and k1 == n2
         and k1 in (64, 128, 256)
+        and scale_q is None
+        or len(scale_q.get_size()) + 1 == len(query.get_size())
     )
 
     use_triton_tma_kernel = (
@@ -900,6 +928,8 @@ def tuned_attention_forward(
         and dropout_p == 0.0
         and k1 == n2
         and k1 in (64, 128, 256)
+        and scale_q is None
+        or len(scale_q.get_size()) + 1 == len(query.get_size())
     )
 
     use_aten_attention_kernel = use_aten_gemm_kernels()
