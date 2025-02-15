@@ -258,10 +258,13 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
             else if constexpr (D == 128) { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.08838834764f); }
             else                         { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.0625f); }
 
+#if defined(TK_ATTN_IS_FP8)
+            warpgroup::load(q_scale_reg, q_scale_smem[warpgroupid]);
+#endif
+
             warpgroup::mma_async_wait();
 
 #if defined(TK_ATTN_IS_FP8)
-            warpgroup::load(q_scale_reg, q_scale_smem[warpgroupid]);
             mul_row(att_block, att_block, q_scale_reg);
             wait(k_scale_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
             load(k_scale_reg, k_scale_smem[(kv_idx)%K::stages]);
