@@ -81,7 +81,7 @@ template<int D> struct fwd_globals {
 
 #if defined(TK_ATTN_IS_FP8)
     using q_scale_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::kv_height>>;
-    using k_scale_row_vec = row_vec<st_fl<fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::kv_height>>;
+    using k_scale_row_vec = row_vec<st_fl<fwd_attend_ker_tile_dims<D>::kv_height, fwd_attend_ker_tile_dims<D>::qo_height>>;
 
     using q_scale_gl = gl<float, -1, -1, -1, -1, q_scale_col_vec>;
     using k_scale_gl = gl<float, -1, -1, -1, -1, k_scale_row_vec>;
@@ -127,7 +127,7 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
 #if defined(TK_ATTN_IS_FP8)
     using q_scale_col_vec = col_vec<st_fl<K::qo_height, K::kv_height>>;
-    using k_scale_row_vec = row_vec<st_fl<K::qo_height, K::kv_height>>;
+    using k_scale_row_vec = row_vec<st_fl<K::kv_height, K::qo_height>>;
 
     q_scale_col_vec (&q_scale_smem)[CONSUMER_WARPGROUPS] = al.allocate<q_scale_col_vec, CONSUMER_WARPGROUPS>();
     k_scale_row_vec (&k_scale_smem)[K::stages]           = al.allocate<k_scale_row_vec, K::stages          >();
@@ -534,7 +534,7 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
 
 #if defined(TK_ATTN_IS_FP8)
         using q_scale_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<64>::qo_height, fwd_attend_ker_tile_dims<64>::kv_height>>;
-        using k_scale_row_vec = row_vec<st_fl<fwd_attend_ker_tile_dims<64>::qo_height, fwd_attend_ker_tile_dims<64>::kv_height>>;
+        using k_scale_row_vec = row_vec<st_fl<fwd_attend_ker_tile_dims<64>::kv_height, fwd_attend_ker_tile_dims<64>::qo_height>>;
         using q_scale_gl = gl<float, -1, -1, -1, -1, q_scale_col_vec>;
         using k_scale_gl = gl<float, -1, -1, -1, -1, k_scale_row_vec>;
 
@@ -603,7 +603,7 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
 
 #if defined(TK_ATTN_IS_FP8)
         using q_scale_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<128>::qo_height, fwd_attend_ker_tile_dims<128>::kv_height>>;
-        using k_scale_row_vec = row_vec<st_fl<fwd_attend_ker_tile_dims<128>::qo_height, fwd_attend_ker_tile_dims<128>::kv_height>>;
+        using k_scale_row_vec = row_vec<st_fl<fwd_attend_ker_tile_dims<128>::kv_height, fwd_attend_ker_tile_dims<128>::qo_height>>;
         using q_scale_gl = gl<float, -1, -1, -1, -1, q_scale_col_vec>;
         using k_scale_gl = gl<float, -1, -1, -1, -1, k_scale_row_vec>;
 
@@ -672,7 +672,7 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
 
 #if defined(TK_ATTN_IS_FP8)
         using q_scale_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<256>::qo_height, fwd_attend_ker_tile_dims<256>::kv_height>>;
-        using k_scale_row_vec = row_vec<st_fl<fwd_attend_ker_tile_dims<256>::qo_height, fwd_attend_ker_tile_dims<256>::kv_height>>;
+        using k_scale_row_vec = row_vec<st_fl<fwd_attend_ker_tile_dims<256>::kv_height, fwd_attend_ker_tile_dims<256>::qo_height>>;
         using q_scale_gl = gl<float, -1, -1, -1, -1, q_scale_col_vec>;
         using k_scale_gl = gl<float, -1, -1, -1, -1, k_scale_row_vec>;
 
