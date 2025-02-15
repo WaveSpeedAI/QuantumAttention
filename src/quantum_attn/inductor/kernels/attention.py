@@ -915,8 +915,7 @@ def tuned_attention_forward(
         and scale is None
         and k1 == n2
         and k1 in (64, 128, 256)
-        and scale_q is None
-        or len(scale_q.get_size()) + 1 == len(query.get_size())
+        and (scale_q is None or len(scale_q.get_size()) + 1 == len(query.get_size()))
     )
 
     use_triton_tma_kernel = (
@@ -928,8 +927,7 @@ def tuned_attention_forward(
         and dropout_p == 0.0
         and k1 == n2
         and k1 in (64, 128, 256)
-        and scale_q is None
-        or len(scale_q.get_size()) + 1 == len(query.get_size())
+        and (scale_q is None or len(scale_q.get_size()) + 1 == len(query.get_size()))
     )
 
     use_aten_attention_kernel = use_aten_gemm_kernels()
