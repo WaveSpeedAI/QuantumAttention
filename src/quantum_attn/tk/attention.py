@@ -126,8 +126,8 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     auto      (*o_smem)                      = reinterpret_cast<o_tile(*)>(q_smem);
 
 #if defined(TK_ATTN_IS_FP8)
-    using q_scale_col_vec = col_vec<st_fl<K::qo_height, K::tile_width>;
-    using k_scale_row_vec = row_vec<st_fl<K::kv_height, K::tile_width>;
+    using q_scale_col_vec = col_vec<st_fl<K::qo_height, K::tile_width>>;
+    using k_scale_row_vec = row_vec<st_fl<K::kv_height, K::tile_width>>;
 
     q_scale_col_vec (&q_scale_smem)[CONSUMER_WARPGROUPS] = al.allocate<q_scale_col_vec, CONSUMER_WARPGROUPS>();
     k_scale_row_vec (&k_scale_smem)[K::stages]           = al.allocate<k_scale_row_vec, K::stages          >();
