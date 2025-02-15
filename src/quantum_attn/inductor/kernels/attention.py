@@ -69,7 +69,7 @@ def tk_fp8_attention_forward_kernel(
     assert scale is None
 
     module = load_tk_attention_module(dtype=value.dtype, is_fp8=True)
-    out = module.fp8_attention_forward(query, key, value, scale_q, scale_k, is_causal)[0]
+    out = module.attention_forward(query, key, value, scale_q, scale_k, is_causal)[0]
     return out
 
 
