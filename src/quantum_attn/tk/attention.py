@@ -431,15 +431,15 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
 
     torch::DeviceGuard device_guard(q.device());
 
-    q = q.contiguous();
-    k = k.contiguous();
-    v = v.contiguous();
+    torch:: Tensor q_ = q.contiguous();
+    torch:: Tensor k_ = k.contiguous();
+    torch:: Tensor v_ = v.contiguous();
 
     auto hr = qo_heads / kv_heads;
 
-    void* q_ptr = q.data_ptr();
-    void* k_ptr = k.data_ptr();
-    void* v_ptr = v.data_ptr();
+    void* q_ptr = q_.data_ptr();
+    void* k_ptr = k_.data_ptr();
+    void* v_ptr = v_.data_ptr();
 
     QKDType*  d_q = reinterpret_cast<QKDType*>(q_ptr);
     QKDType*  d_k = reinterpret_cast<QKDType*>(k_ptr);
@@ -497,6 +497,11 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
                                         torch::dtype(torch::kFloat).device(q.device()));
         scale_k_.copy_(scale_k);
     }
+
+    float* scale_q_ptr = reinterpret_cast<float*>(scale_q_.data_ptr());
+    float *d_scale_q = reinterpret_cast<float*>(scale_q_ptr);
+    float* scale_k_ptr = reinterpret_cast<float*>(scale_k_.data_ptr());
+    float *d_scale_k = reinterpret_cast<float*>(scale_k_ptr);
 #endif
 
     auto stream = at::cuda::getCurrentCUDAStream().stream();
@@ -533,8 +538,8 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
         using q_scale_gl = gl<float, -1, -1, -1, -1, q_scale_col_vec>;
         using k_scale_gl = gl<float, -1, -1, -1, -1, k_scale_col_vec>;
 
-        q_scale_gl q_scale_arg{reinterpret_cast<float*>(scale_q_.data_ptr()), static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U, static_cast<unsigned int>(scale_q_stride_h)};
-        k_scale_gl k_scale_arg{reinterpret_cast<float*>(scale_k_.data_ptr()), static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), 1U, static_cast<unsigned int>(scale_k_stride_h)};
+        q_scale_gl q_scale_arg{d_scale_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U, static_cast<unsigned int>(scale_q_stride_h)};
+        k_scale_gl k_scale_arg{d_scale_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), 1U, static_cast<unsigned int>(scale_k_stride_h)};
 #endif
 
         globals g{qg_arg, kg_arg, vg_arg
@@ -602,8 +607,8 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
         using q_scale_gl = gl<float, -1, -1, -1, -1, q_scale_col_vec>;
         using k_scale_gl = gl<float, -1, -1, -1, -1, k_scale_col_vec>;
 
-        q_scale_gl q_scale_arg{reinterpret_cast<float*>(scale_q_.data_ptr()), static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U, static_cast<unsigned int>(scale_q_stride_h)};
-        k_scale_gl k_scale_arg{reinterpret_cast<float*>(scale_k_.data_ptr()), static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), 1U, static_cast<unsigned int>(scale_k_stride_h)};
+        q_scale_gl q_scale_arg{d_scale_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U, static_cast<unsigned int>(scale_q_stride_h)};
+        k_scale_gl k_scale_arg{d_scale_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), 1U, static_cast<unsigned int>(scale_k_stride_h)};
 #endif
 
         globals g{qg_arg, kg_arg, vg_arg
@@ -671,8 +676,8 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
         using q_scale_gl = gl<float, -1, -1, -1, -1, q_scale_col_vec>;
         using k_scale_gl = gl<float, -1, -1, -1, -1, k_scale_col_vec>;
 
-        q_scale_gl q_scale_arg{reinterpret_cast<float*>(scale_q_.data_ptr()), static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U, static_cast<unsigned int>(scale_q_stride_h)};
-        k_scale_gl k_scale_arg{reinterpret_cast<float*>(scale_k_.data_ptr()), static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), 1U, static_cast<unsigned int>(scale_k_stride_h)};
+        q_scale_gl q_scale_arg{d_scale_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U, static_cast<unsigned int>(scale_q_stride_h)};
+        k_scale_gl k_scale_arg{d_scale_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), 1U, static_cast<unsigned int>(scale_k_stride_h)};
 #endif
 
         globals g{qg_arg, kg_arg, vg_arg
