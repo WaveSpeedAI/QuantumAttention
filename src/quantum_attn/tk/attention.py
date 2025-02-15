@@ -177,6 +177,7 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
             tma::load_async(v_smem[j], g.v, kv_tile_idx, v_smem_arrived[j]);
 #if defined(TK_ATTN_IS_FP8)
             coord<k_scale_row_vec> k_scale_tile_idx = {blockIdx.z, kv_head_idx, 0, j};
+            tma::expect_bytes(k_scale_smem_arrived[j], sizeof(k_scale_row_vec));
             tma::load_async(k_scale_smem[j], g.k_scale, k_scale_tile_idx, k_scale_smem_arrived[j]);
 #endif
         }
