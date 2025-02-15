@@ -73,7 +73,23 @@ def _validate_tk_tma_input(
                 f"Expected query, key, and value to have dtype torch.float16 or torch.bfloat16, but got query.dtype: {query.dtype} instead.",
             )
     else:
-        return False, "NYI: scale_q and scale_k must be None"
+        if scale_k is None:
+            return False, "scale_q must be None if scale_k is None"
+        if query.dtype != torch.float8_e4m3fn:
+            return (
+                False,
+                f"Expected query to have dtype torch.float8_e4m3fn, but got query.dtype: {query.dtype} instead.",
+            )
+        if scale_q.shape != query.shape[:-1]:
+            return (
+                False,
+                f"Expected scale_q to have shape equal to query.shape[:-1], but got scale_q.shape: {scale_q.shape}, query.shape: {query.shape} instead.",
+            )
+        if scale_k.shape != key.shape[:-1]:
+            return (
+                False,
+                f"Expected scale_k to have shape equal to key.shape[:-1], but got scale_k.shape: {scale_k.shape}, key.shape: {key.shape} instead.",
+            )
     if query.dtype != key.dtype:
         return (
             False,
@@ -400,8 +416,9 @@ def _fp8_attention_forward_wrapper(
         raise ValueError("scale_q and scale_k must be both provided or both not provided")
 
     if scale_q is None:
-        query, scale_q = dynamically_quantize_fp8(query, reduction_dim=-1)
-        key, scale_k = dynamically_quantize_fp8(key, reduction_dim=-1)
+        reduction_dim = query.dim() - 1
+        query, scale_q = dynamically_quantize_fp8(query, reduction_dim=reduction_dim)
+        key, scale_k = dynamically_quantize_fp8(key, reduction_dim=reduction_dim)
 
     return quantum_attn_ops.fp8_attention_forward(
         query,

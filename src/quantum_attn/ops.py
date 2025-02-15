@@ -78,11 +78,16 @@ def _fp8_attention_forward(
     query = query.to(out_dtype)
     key = key.to(out_dtype)
 
+    assert scale_q.dim() == scale_k.dim()
     scale_q = scale_q.to(out_dtype)
     scale_k = scale_k.to(out_dtype)
 
-    query = query * scale_q[..., None]
-    key = key * scale_k[..., None]
+    while scale_q.dim() < query.dim():
+        scale_q = scale_q.unsqueeze(-1)
+        scale_k = scale_k.unsqueeze(-1)
+
+    query = query * scale_q
+    key = key * scale_k
 
     return aten.scaled_dot_product_attention(
         query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
