@@ -534,9 +534,9 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
 
 #if defined(TK_ATTN_IS_FP8)
         using q_scale_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<64>::qo_height, fwd_attend_ker_tile_dims<64>::tile_width>>;
-        using k_scale_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<64>::kv_height, fwd_attend_ker_tile_dims<64>::tile_width>>;
+        using k_scale_row_vec = row_vec<st_fl<fwd_attend_ker_tile_dims<64>::kv_height, fwd_attend_ker_tile_dims<64>::tile_width>>;
         using q_scale_gl = gl<float, -1, -1, -1, -1, q_scale_col_vec>;
-        using k_scale_gl = gl<float, -1, -1, -1, -1, k_scale_col_vec>;
+        using k_scale_gl = gl<float, -1, -1, -1, -1, k_scale_row_vec>;
 
         q_scale_gl q_scale_arg{d_scale_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U, static_cast<unsigned int>(scale_q_stride_h)};
         k_scale_gl k_scale_arg{d_scale_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), 1U, static_cast<unsigned int>(scale_k_stride_h)};
@@ -603,9 +603,9 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
 
 #if defined(TK_ATTN_IS_FP8)
         using q_scale_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<128>::qo_height, fwd_attend_ker_tile_dims<128>::tile_width>>;
-        using k_scale_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<128>::kv_height, fwd_attend_ker_tile_dims<128>::tile_width>>;
+        using k_scale_row_vec = row_vec<st_fl<fwd_attend_ker_tile_dims<128>::kv_height, fwd_attend_ker_tile_dims<128>::tile_width>>;
         using q_scale_gl = gl<float, -1, -1, -1, -1, q_scale_col_vec>;
-        using k_scale_gl = gl<float, -1, -1, -1, -1, k_scale_col_vec>;
+        using k_scale_gl = gl<float, -1, -1, -1, -1, k_scale_row_vec>;
 
         q_scale_gl q_scale_arg{d_scale_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U, static_cast<unsigned int>(scale_q_stride_h)};
         k_scale_gl k_scale_arg{d_scale_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), 1U, static_cast<unsigned int>(scale_k_stride_h)};
@@ -672,9 +672,9 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
 
 #if defined(TK_ATTN_IS_FP8)
         using q_scale_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<256>::qo_height, fwd_attend_ker_tile_dims<256>::tile_width>>;
-        using k_scale_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<256>::kv_height, fwd_attend_ker_tile_dims<256>::tile_width>>;
+        using k_scale_row_vec = row_vec<st_fl<fwd_attend_ker_tile_dims<256>::kv_height, fwd_attend_ker_tile_dims<256>::tile_width>>;
         using q_scale_gl = gl<float, -1, -1, -1, -1, q_scale_col_vec>;
-        using k_scale_gl = gl<float, -1, -1, -1, -1, k_scale_col_vec>;
+        using k_scale_gl = gl<float, -1, -1, -1, -1, k_scale_row_vec>;
 
         q_scale_gl q_scale_arg{d_scale_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U, static_cast<unsigned int>(scale_q_stride_h)};
         k_scale_gl k_scale_arg{d_scale_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), 1U, static_cast<unsigned int>(scale_k_stride_h)};
