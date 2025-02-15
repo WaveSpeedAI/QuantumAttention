@@ -257,10 +257,10 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
 #if defined(TK_ATTN_IS_FP8)
             warpgroup::load(q_scale_reg, q_scale_smem[warpgroupid]);
-            mul(att_block, att_block, q_scale_reg);
+            mul_row(att_block, att_block, q_scale_reg);
             wait(k_scale_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
             warpgroup::load(k_scale_reg, k_scale_smem[(kv_idx)%K::stages]);
-            mul(att_block, att_block, k_scale_reg);
+            mul_col(att_block, att_block, k_scale_reg);
 #endif
 
             if constexpr (is_causal) {
