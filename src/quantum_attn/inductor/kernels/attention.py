@@ -67,8 +67,6 @@ def tk_fp8_attention_forward_kernel(
     assert attn_mask is None
     assert dropout_p == 0.0
     assert scale is None
-    assert scale_q.dim() + 2 == query.dim()
-    assert scale_k.dim() + 2 == key.dim()
 
     module = load_tk_attention_module(dtype=value.dtype, is_fp8=True)
     out = module.fp8_attention_forward(query, key, value, scale_q, scale_k, is_causal)[0]
