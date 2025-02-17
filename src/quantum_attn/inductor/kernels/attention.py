@@ -56,8 +56,6 @@ def tk_fp8_attention_forward_kernel(
     query,
     key,
     value,
-    scale_q,
-    scale_k,
     attn_mask=None,
     dropout_p=0.0,
     is_causal=False,
@@ -69,7 +67,7 @@ def tk_fp8_attention_forward_kernel(
     assert scale is None
 
     module = load_tk_attention_module(dtype=value.dtype, is_fp8=True)
-    out = module.attention_forward(query, key, value, scale_q, scale_k, is_causal)[0]
+    out = module.attention_forward(query, key, value, is_causal)[0]
     return out
 
 
@@ -913,7 +911,7 @@ def tuned_attention_forward(
         and scale is None
         and k1 == n2
         and k1 in (64, 128, 256)
-        and (scale_q is None or len(scale_q.get_size()) + 1 == len(query.get_size()))
+        and scale_q is None
     )
 
     use_triton_tma_kernel = (
@@ -925,7 +923,10 @@ def tuned_attention_forward(
         and dropout_p == 0.0
         and k1 == n2
         and k1 in (64, 128, 256)
-        and (scale_q is None or len(scale_q.get_size()) + 1 == len(query.get_size()))
+        and (
+            query.get_dtype() != torch.float8_e4m3fn
+            or (scale_q is not None and len(scale_q.get_size()) + 1 == len(query.get_size()))
+        )
     )
 
     use_aten_attention_kernel = use_aten_gemm_kernels()

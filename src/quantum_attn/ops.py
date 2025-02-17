@@ -65,8 +65,8 @@ def _fp8_attention_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    scale_q: torch.Tensor,
-    scale_k: torch.Tensor,
+    scale_q: Optional[torch.Tensor] = None,
+    scale_k: Optional[torch.Tensor] = None,
     attn_mask: Optional[torch.Tensor] = None,
     dropout_p: float = 0.0,
     is_causal: bool = False,
@@ -78,16 +78,17 @@ def _fp8_attention_forward(
     query = query.to(out_dtype)
     key = key.to(out_dtype)
 
-    assert scale_q.dim() == scale_k.dim()
-    scale_q = scale_q.to(out_dtype)
-    scale_k = scale_k.to(out_dtype)
+    if scale_q is not None:
+        assert scale_q.dim() == scale_k.dim()
+        scale_q = scale_q.to(out_dtype)
+        scale_k = scale_k.to(out_dtype)
 
-    while scale_q.dim() < query.dim():
-        scale_q = scale_q.unsqueeze(-1)
-        scale_k = scale_k.unsqueeze(-1)
+        while scale_q.dim() < query.dim():
+            scale_q = scale_q.unsqueeze(-1)
+            scale_k = scale_k.unsqueeze(-1)
 
-    query = query * scale_q
-    key = key * scale_k
+        query = query * scale_q
+        key = key * scale_k
 
     return aten.scaled_dot_product_attention(
         query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
@@ -99,8 +100,8 @@ def fp8_attention_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    scale_q: torch.Tensor,
-    scale_k: torch.Tensor,
+    scale_q: Optional[torch.Tensor] = None,
+    scale_k: Optional[torch.Tensor] = None,
     attn_mask: Optional[torch.Tensor] = None,
     dropout_p: float = 0.0,
     is_causal: bool = False,
@@ -125,8 +126,8 @@ def _(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    scale_q: torch.Tensor,
-    scale_k: torch.Tensor,
+    scale_q: Optional[torch.Tensor] = None,
+    scale_k: Optional[torch.Tensor] = None,
     attn_mask: Optional[torch.Tensor] = None,
     dropout_p: float = 0.0,
     is_causal: bool = False,
