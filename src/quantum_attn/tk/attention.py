@@ -73,18 +73,18 @@ template<int D> struct fwd_globals {
     // using l_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::tile_width>>;
     using o_tile    =         st<DType, fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::tile_width>;
 
-    using q_gl = gl<QKDType,  -1, -1, -1, -1, q_tile>;
-    using k_gl = gl<QKDType,  -1, -1, -1, -1, k_tile>;
-    using v_gl = gl<DType,  -1, -1, -1, -1, v_tile>;
-    // using l_gl = gl<float, -1, -1, -1, -1, l_col_vec>;
-    using o_gl = gl<DType,  -1, -1, -1, -1, o_tile>;
+    using q_gl = gl<QKDType,  -1, -1, -1, D, q_tile>;
+    using k_gl = gl<QKDType,  -1, -1, -1, D, k_tile>;
+    using v_gl = gl<DType,  -1, -1, -1, D, v_tile>;
+    // using l_gl = gl<float, -1, -1, 1, -1, l_col_vec>;
+    using o_gl = gl<DType,  -1, -1, -1, D, o_tile>;
 
 #if defined(TK_ATTN_IS_FP8)
     using q_scale_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::kv_height>>;
     using k_scale_row_vec = row_vec<st_fl<fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::kv_height>>;
 
-    using q_scale_gl = gl<float, -1, -1, -1, -1, q_scale_col_vec>;
-    using k_scale_gl = gl<float, -1, -1, -1, -1, k_scale_row_vec>;
+    using q_scale_gl = gl<float, -1, -1, 1, -1, q_scale_col_vec>;
+    using k_scale_gl = gl<float, -1, -1, 1, -1, k_scale_row_vec>;
 #endif
 
     q_gl q;
@@ -119,11 +119,15 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     // using l_col_vec = col_vec<st_fl<K::qo_height, K::tile_width>>;
     using o_tile    =         st<DType, K::qo_height, K::tile_width>;
 
-    q_tile    (&q_smem)[CONSUMER_WARPGROUPS] = al.allocate<q_tile, CONSUMER_WARPGROUPS>();
+    union TileUnion {
+        q_tile q;
+        o_tile o;
+    };
+
+    TileUnion (&q_o_smem)[CONSUMER_WARPGROUPS] = al.allocate<TileUnion, CONSUMER_WARPGROUPS>();
     k_tile    (&k_smem)[K::stages]           = al.allocate<k_tile, K::stages          >();
     v_tile    (&v_smem)[K::stages]           = al.allocate<v_tile, K::stages          >();
     // l_col_vec (&l_smem)[CONSUMER_WARPGROUPS] = al.allocate<l_col_vec, CONSUMER_WARPGROUPS>();
-    auto      (*o_smem)                      = reinterpret_cast<o_tile(*)>(q_smem);
 
 #if defined(TK_ATTN_IS_FP8)
     using q_scale_col_vec = col_vec<st_fl<K::qo_height, K::kv_height>>;
@@ -148,38 +152,40 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 #endif
         for(int j = 0; j < K::stages; j++) {
             init_semaphore(k_smem_arrived[j], 0, 1);
-            init_semaphore(v_smem_arrived[j], 0, 1);
-            init_semaphore(compute_done[j], CONSUMER_WARPGROUPS, 0);
 #if defined(TK_ATTN_IS_FP8)
             init_semaphore(k_scale_smem_arrived[j], 0, 1);
 #endif
+            init_semaphore(v_smem_arrived[j], 0, 1);
+            init_semaphore(compute_done[j], CONSUMER_WARPGROUPS, 0);
         }
 
-        tma::expect_bytes(qsmem_semaphore, sizeof(q_smem));
-#if defined(TK_ATTN_IS_FP8)
-        tma::expect_bytes(q_scale_smem_semaphore, sizeof(q_scale_smem));
-#endif
+        tma::expect_bytes(qsmem_semaphore, sizeof(q_tile) * CONSUMER_WARPGROUPS);
 
         for (int wg = 0; wg < CONSUMER_WARPGROUPS; wg++) {
             coord<q_tile> q_tile_idx = {blockIdx.z, blockIdx.y, (seq_idx) + wg, 0};
-            tma::load_async(q_smem[wg], g.q, q_tile_idx, qsmem_semaphore);
+            tma::load_async(q_o_smem[wg].q, g.q, q_tile_idx, qsmem_semaphore);
+        }
+
 #if defined(TK_ATTN_IS_FP8)
+        tma::expect_bytes(q_scale_smem_semaphore, sizeof(q_scale_smem));
+
+        for (int wg = 0; wg < CONSUMER_WARPGROUPS; wg++) {
             coord<q_scale_col_vec> q_scale_tile_idx = {blockIdx.z, blockIdx.y, 0, (seq_idx) + wg};
             tma::load_async(q_scale_smem[wg], g.q_scale, q_scale_tile_idx, q_scale_smem_semaphore);
-#endif
         }
+#endif
 
         for (int j = 0; j < K::stages - 1; j++) {
             coord<k_tile> kv_tile_idx = {blockIdx.z, kv_head_idx, j, 0};
             tma::expect_bytes(k_smem_arrived[j], sizeof(k_tile));
             tma::load_async(k_smem[j], g.k, kv_tile_idx, k_smem_arrived[j]);
-            tma::expect_bytes(v_smem_arrived[j], sizeof(v_tile));
-            tma::load_async(v_smem[j], g.v, kv_tile_idx, v_smem_arrived[j]);
 #if defined(TK_ATTN_IS_FP8)
             coord<k_scale_row_vec> k_scale_tile_idx = {blockIdx.z, kv_head_idx, 0, j};
             tma::expect_bytes(k_scale_smem_arrived[j], sizeof(k_scale_row_vec));
             tma::load_async(k_scale_smem[j], g.k_scale, k_scale_tile_idx, k_scale_smem_arrived[j]);
 #endif
+            tma::expect_bytes(v_smem_arrived[j], sizeof(v_tile));
+            tma::load_async(v_smem[j], g.v, kv_tile_idx, v_smem_arrived[j]);
         }
     }
     __syncthreads();
@@ -199,19 +205,18 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
         if(warpid == NUM_WORKERS-4) {
             for (auto kv_idx = pipe_idx - 1; kv_idx <= kv_iters; kv_idx++) {
-                coord<k_tile> kv_tile_idx = {blockIdx.z, kv_head_idx, kv_idx + 1, 0};
+                coord<k_tile> kv_tile_idx = {blockIdx.z, kv_head_idx, kv_idx+1, 0};
                 tma::expect_bytes(k_smem_arrived[(kv_idx+1)%K::stages], sizeof(k_tile));
                 tma::load_async(k_smem[(kv_idx+1)%K::stages], g.k, kv_tile_idx, k_smem_arrived[(kv_idx+1)%K::stages]);
-                tma::expect_bytes(v_smem_arrived[(kv_idx+1)%K::stages], sizeof(v_tile));
-                tma::load_async(v_smem[(kv_idx+1)%K::stages], g.v, kv_tile_idx, v_smem_arrived[(kv_idx+1)%K::stages]);
-
 #if defined(TK_ATTN_IS_FP8)
                 coord<k_scale_row_vec> k_scale_tile_idx = {blockIdx.z, kv_head_idx, 0, kv_idx+1};
                 tma::expect_bytes(k_scale_smem_arrived[(kv_idx+1)%K::stages], sizeof(k_scale_row_vec));
                 tma::load_async(k_scale_smem[(kv_idx+1)%K::stages], g.k_scale, k_scale_tile_idx, k_scale_smem_arrived[(kv_idx+1)%K::stages]);
 #endif
+                tma::expect_bytes(v_smem_arrived[(kv_idx+1)%K::stages], sizeof(v_tile));
+                tma::load_async(v_smem[(kv_idx+1)%K::stages], g.v, kv_tile_idx, v_smem_arrived[(kv_idx+1)%K::stages]);
 
-                wait(compute_done[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
+                wait(compute_done[(kv_idx-(pipe_idx-1))%K::stages], ((kv_idx-(pipe_idx-1))/K::stages)%2);
             }
         }
     }
@@ -245,26 +250,21 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
             rt_fl<16, K::kv_height>  att_block;
             rt<DType, 16, K::kv_height>  att_block_mma;
-#if defined(TK_ATTN_IS_FP8)
-            col_vec<rt_fl<16, K::kv_height>> q_scale_reg;
-            row_vec<rt_fl<16, K::kv_height>> k_scale_reg;
-#endif
 
             wait(k_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
-            warpgroup::mm_ABt(att_block, q_smem[warpgroupid], k_smem[(kv_idx)%K::stages]);
+            warpgroup::mm_ABt(att_block, q_o_smem[warpgroupid].q, k_smem[(kv_idx)%K::stages]);
 
             copy(max_vec_last_scaled, max_vec);
             if constexpr (D == 64)       { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.125f); }
             else if constexpr (D == 128) { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.08838834764f); }
             else                         { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.0625f); }
 
-#if defined(TK_ATTN_IS_FP8)
-            warpgroup::load(q_scale_reg, q_scale_smem[warpgroupid]);
-#endif
-
             warpgroup::mma_async_wait();
 
 #if defined(TK_ATTN_IS_FP8)
+            col_vec<rt_fl<16, K::kv_height>> q_scale_reg;
+            row_vec<rt_fl<16, K::kv_height>> k_scale_reg;
+            warpgroup::load(q_scale_reg, q_scale_smem[warpgroupid]);
             mul_row(att_block, att_block, q_scale_reg);
             wait(k_scale_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
             load(k_scale_reg, k_scale_smem[(kv_idx)%K::stages]);
@@ -340,12 +340,12 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         }
 
         div_row(o_reg, o_reg, norm_vec);
-        warpgroup::store(o_smem[warpgroupid], o_reg);
+        warpgroup::store(q_o_smem[warpgroupid].o, o_reg);
         warpgroup::sync(warpgroupid+4);
 
         if (warpid % 4 == 0) {
             coord<o_tile> o_tile_idx = {blockIdx.z, blockIdx.y, (seq_idx) + warpgroupid, 0};
-            tma::store_async(g.o, o_smem[warpgroupid], o_tile_idx);
+            tma::store_async(g.o, q_o_smem[warpgroupid].o, o_tile_idx);
         }
 
         // mul(max_vec_scaled,   max_vec_scaled, 0.69314718056f);
@@ -526,28 +526,28 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
         // using l_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<64>::qo_height, fwd_attend_ker_tile_dims<64>::tile_width>>;
         using o_tile    =         st<DType, fwd_attend_ker_tile_dims<64>::qo_height, fwd_attend_ker_tile_dims<64>::tile_width>;
 
-        using q_global = gl<QKDType,  -1, -1, -1, -1, q_tile>;
-        using k_global = gl<QKDType,  -1, -1, -1, -1, k_tile>;
-        using v_global = gl<DType,  -1, -1, -1, -1, v_tile>;
-        // using l_global = gl<float, -1, -1, -1, -1, l_col_vec>;
-        using o_global = gl<DType,  -1, -1, -1, -1, o_tile>;
+        using q_global = gl<QKDType,  -1, -1, -1, 64, q_tile>;
+        using k_global = gl<QKDType,  -1, -1, -1, 64, k_tile>;
+        using v_global = gl<DType,  -1, -1, -1, 64, v_tile>;
+        // using l_global = gl<float, -1, -1, 1, -1, l_col_vec>;
+        using o_global = gl<DType,  -1, -1, -1, 64, o_tile>;
 
         using globals      = fwd_globals<64>;
 
-        q_global qg_arg{d_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), 64U};
-        k_global kg_arg{d_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), 64U};
-        v_global vg_arg{d_v, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), 64U};
-        // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U,  static_cast<unsigned int>(l_vec_stride_h)};
-        o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), 64U};
+        q_global qg_arg{d_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), nullptr};
+        k_global kg_arg{d_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), nullptr};
+        v_global vg_arg{d_v, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), nullptr};
+        // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), nullptr,  static_cast<unsigned int>(l_vec_stride_h)};
+        o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), nullptr};
 
 #if defined(TK_ATTN_IS_FP8)
         using q_scale_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<64>::qo_height, fwd_attend_ker_tile_dims<64>::kv_height>>;
         using k_scale_row_vec = row_vec<st_fl<fwd_attend_ker_tile_dims<64>::qo_height, fwd_attend_ker_tile_dims<64>::kv_height>>;
-        using q_scale_gl = gl<float, -1, -1, -1, -1, q_scale_col_vec>;
-        using k_scale_gl = gl<float, -1, -1, -1, -1, k_scale_row_vec>;
+        using q_scale_gl = gl<float, -1, -1, 1, -1, q_scale_col_vec>;
+        using k_scale_gl = gl<float, -1, -1, 1, -1, k_scale_row_vec>;
 
-        q_scale_gl q_scale_arg{d_scale_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U, static_cast<unsigned int>(scale_q_stride_h)};
-        k_scale_gl k_scale_arg{d_scale_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), 1U, static_cast<unsigned int>(scale_k_stride_h)};
+        q_scale_gl q_scale_arg{d_scale_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), nullptr, static_cast<unsigned int>(scale_q_stride_h)};
+        k_scale_gl k_scale_arg{d_scale_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), nullptr, static_cast<unsigned int>(scale_k_stride_h)};
 #endif
 
         globals g{qg_arg, kg_arg, vg_arg
@@ -595,28 +595,28 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
         // using l_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<128>::qo_height, fwd_attend_ker_tile_dims<128>::tile_width>>;
         using o_tile    =         st<DType, fwd_attend_ker_tile_dims<128>::qo_height, fwd_attend_ker_tile_dims<128>::tile_width>;
 
-        using q_global = gl<QKDType,  -1, -1, -1, -1, q_tile>;
-        using k_global = gl<QKDType,  -1, -1, -1, -1, k_tile>;
-        using v_global = gl<DType,  -1, -1, -1, -1, v_tile>;
-        // using l_global = gl<float, -1, -1, -1, -1, l_col_vec>;
-        using o_global = gl<DType,  -1, -1, -1, -1, o_tile>;
+        using q_global = gl<QKDType,  -1, -1, -1, 128, q_tile>;
+        using k_global = gl<QKDType,  -1, -1, -1, 128, k_tile>;
+        using v_global = gl<DType,  -1, -1, -1, 128, v_tile>;
+        // using l_global = gl<float, -1, -1, 1, -1, l_col_vec>;
+        using o_global = gl<DType,  -1, -1, -1, 128, o_tile>;
 
         using globals      = fwd_globals<128>;
 
-        q_global qg_arg{d_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), 128U};
-        k_global kg_arg{d_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), 128U};
-        v_global vg_arg{d_v, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), 128U};
-        // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U,   static_cast<unsigned int>(l_vec_stride_h)};
-        o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), 128U};
+        q_global qg_arg{d_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), nullptr};
+        k_global kg_arg{d_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), nullptr};
+        v_global vg_arg{d_v, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), nullptr};
+        // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), nullptr,   static_cast<unsigned int>(l_vec_stride_h)};
+        o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), nullptr};
 
 #if defined(TK_ATTN_IS_FP8)
         using q_scale_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<128>::qo_height, fwd_attend_ker_tile_dims<128>::kv_height>>;
         using k_scale_row_vec = row_vec<st_fl<fwd_attend_ker_tile_dims<128>::qo_height, fwd_attend_ker_tile_dims<128>::kv_height>>;
-        using q_scale_gl = gl<float, -1, -1, -1, -1, q_scale_col_vec>;
-        using k_scale_gl = gl<float, -1, -1, -1, -1, k_scale_row_vec>;
+        using q_scale_gl = gl<float, -1, -1, 1, -1, q_scale_col_vec>;
+        using k_scale_gl = gl<float, -1, -1, 1, -1, k_scale_row_vec>;
 
-        q_scale_gl q_scale_arg{d_scale_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U, static_cast<unsigned int>(scale_q_stride_h)};
-        k_scale_gl k_scale_arg{d_scale_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), 1U, static_cast<unsigned int>(scale_k_stride_h)};
+        q_scale_gl q_scale_arg{d_scale_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), nullptr, static_cast<unsigned int>(scale_q_stride_h)};
+        k_scale_gl k_scale_arg{d_scale_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), nullptr, static_cast<unsigned int>(scale_k_stride_h)};
 #endif
 
         globals g{qg_arg, kg_arg, vg_arg
@@ -664,28 +664,28 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
         // using l_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<256>::qo_height, fwd_attend_ker_tile_dims<256>::tile_width>>;
         using o_tile    =         st<DType, fwd_attend_ker_tile_dims<256>::qo_height, fwd_attend_ker_tile_dims<256>::tile_width>;
 
-        using q_global = gl<QKDType,  -1, -1, -1, -1, q_tile>;
-        using k_global = gl<QKDType,  -1, -1, -1, -1, k_tile>;
-        using v_global = gl<DType,  -1, -1, -1, -1, v_tile>;
-        // using l_global = gl<float, -1, -1, -1, -1, l_col_vec>;
-        using o_global = gl<DType,  -1, -1, -1, -1, o_tile>;
+        using q_global = gl<QKDType,  -1, -1, -1, 256, q_tile>;
+        using k_global = gl<QKDType,  -1, -1, -1, 256, k_tile>;
+        using v_global = gl<DType,  -1, -1, -1, 256, v_tile>;
+        // using l_global = gl<float, -1, -1, 1, -1, l_col_vec>;
+        using o_global = gl<DType,  -1, -1, -1, 256, o_tile>;
 
         using globals      = fwd_globals<256>;
 
-        q_global qg_arg{d_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), 256U};
-        k_global kg_arg{d_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), 256U};
-        v_global vg_arg{d_v, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), 256U};
-        // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U,   static_cast<unsigned int>(l_vec_stride_h)};
-        o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), 256U};
+        q_global qg_arg{d_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), nullptr};
+        k_global kg_arg{d_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), nullptr};
+        v_global vg_arg{d_v, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), nullptr};
+        // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), nullptr,   static_cast<unsigned int>(l_vec_stride_h)};
+        o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), nullptr};
 
 #if defined(TK_ATTN_IS_FP8)
         using q_scale_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<256>::qo_height, fwd_attend_ker_tile_dims<256>::kv_height>>;
         using k_scale_row_vec = row_vec<st_fl<fwd_attend_ker_tile_dims<256>::qo_height, fwd_attend_ker_tile_dims<256>::kv_height>>;
-        using q_scale_gl = gl<float, -1, -1, -1, -1, q_scale_col_vec>;
-        using k_scale_gl = gl<float, -1, -1, -1, -1, k_scale_row_vec>;
+        using q_scale_gl = gl<float, -1, -1, 1, -1, q_scale_col_vec>;
+        using k_scale_gl = gl<float, -1, -1, 1, -1, k_scale_row_vec>;
 
-        q_scale_gl q_scale_arg{d_scale_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U, static_cast<unsigned int>(scale_q_stride_h)};
-        k_scale_gl k_scale_arg{d_scale_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), 1U, static_cast<unsigned int>(scale_k_stride_h)};
+        q_scale_gl q_scale_arg{d_scale_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), nullptr, static_cast<unsigned int>(scale_q_stride_h)};
+        k_scale_gl k_scale_arg{d_scale_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), nullptr, static_cast<unsigned int>(scale_k_stride_h)};
 #endif
 
         globals g{qg_arg, kg_arg, vg_arg

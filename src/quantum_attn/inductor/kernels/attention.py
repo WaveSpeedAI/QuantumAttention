@@ -885,7 +885,6 @@ def generate_attention_template_choices(
         )
 
 
-@register_lowering(quantum_attn_ops.attention_forward.default, type_promotion_kind=None)
 def tuned_attention_forward(
     query,
     key,
@@ -933,13 +932,20 @@ def tuned_attention_forward(
     query, key, value = (ir.ExternKernel.realize_input(x) for x in (query, key, value))
     if use_tk_tma_kernel:
         query, key, value = (require_dense_memory(x) for x in (query, key, value))
+        if attn_mask is not None:
+            attn_mask = require_dense_memory(attn_mask)
     elif use_triton_tma_kernel:
         query = require_dense_memory(query, num_dims=1)
         key, value = (require_dense_memory(x, num_dims=2) for x in (key, value))
+        if attn_mask is not None:
+            attn_mask = require_dense_memory(attn_mask, num_dims=2)
 
     if scale_q is not None:
         scale_q, scale_k = (ir.ExternKernel.realize_input(x) for x in (scale_q, scale_k))
-        scale_q, scale_k = (require_dense_memory(x, num_dims=1) for x in (scale_q, scale_k))
+        if use_tk_tma_kernel:
+            scale_q, scale_k = (require_dense_memory(x) for x in (scale_q, scale_k))
+        elif use_triton_tma_kernel:
+            scale_q, scale_k = (require_dense_memory(x, num_dims=1) for x in (scale_q, scale_k))
     for x in (query, key, value, scale_q, scale_k, attn_mask):
         if x is not None:
             x.freeze_layout()
@@ -1020,6 +1026,9 @@ def tuned_attention_forward(
     if not use_max_autotune():
         choices = choices[:1]
     return autotune_select_algorithm("quantum_attn_attention_forward", choices, args, layout2)
+
+
+register_lowering(quantum_attn_ops.attention_forward.default, type_promotion_kind=None)(tuned_attention_forward)
 
 
 @register_lowering(quantum_attn_ops.fp8_attention_forward.default, type_promotion_kind=None)
