@@ -411,14 +411,24 @@ def _fp8_attention_forward_wrapper(
     scale: Optional[float] = None,
     scale_q: Optional[torch.Tensor] = None,
     scale_k: Optional[torch.Tensor] = None,
+    scaling_method: Optional[str] = None,
 ) -> Tensor:
     if (scale_q is None) != (scale_k is None):
         raise ValueError("scale_q and scale_k must be both provided or both not provided")
 
     if scale_q is None:
-        reduction_dim = query.dim() - 1
-        query, scale_q = dynamically_quantize_fp8(query, reduction_dim=reduction_dim)
-        key, scale_k = dynamically_quantize_fp8(key, reduction_dim=reduction_dim)
+        if scaling_method is None:
+            scaling_method = "none"
+        if scaling_method == "none":
+            q_max = torch.finfo(torch.float8_e4m3fn).max
+            query = query.clamp(-q_max, q_max).to(torch.float8_e4m3fn)
+            key = key.clamp(-q_max, q_max).to(torch.float8_e4m3fn)
+        elif scaling_method == "token-wise":
+            reduction_dim = query.dim() - 1
+            query, scale_q = dynamically_quantize_fp8(query, reduction_dim=reduction_dim)
+            key, scale_k = dynamically_quantize_fp8(key, reduction_dim=reduction_dim)
+        else:
+            raise ValueError(f"Unsupported scaling_method: {scaling_method}")
 
     return quantum_attn_ops.fp8_attention_forward(
         query,
@@ -444,6 +454,7 @@ def fp8_attention_forward(
     scale: Optional[float] = None,
     scale_q: Optional[torch.Tensor] = None,
     scale_k: Optional[torch.Tensor] = None,
+    scaling_method: Optional[str] = None,
 ) -> Tensor:
     if not torch._dynamo.is_dynamo_supported():
         raise RuntimeError("fp8_attention_forward requires dynamo support")
@@ -462,8 +473,17 @@ def fp8_attention_forward(
     from torch._subclasses.fake_tensor import is_fake
 
     if any(is_fake(x) for x in (query, key, value, attn_mask, scale_q, scale_k)):
-        out = _attention_forward_wrapper(
-            query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
+        out = _fp8_attention_forward_wrapper(
+            query,
+            key,
+            value,
+            attn_mask=attn_mask,
+            dropout_p=dropout_p,
+            is_causal=is_causal,
+            scale=scale,
+            scale_q=scale_q,
+            scale_k=scale_k,
+            scaling_method=scaling_method,
         )
         return out
 
@@ -482,6 +502,7 @@ def fp8_attention_forward(
             scale=scale,
             scale_q=scale_q,
             scale_k=scale_k,
+            scaling_method=scaling_method,
         )
         return out
 
@@ -496,6 +517,7 @@ def fp8_attention_forward(
             scale=scale,
             scale_q=scale_q,
             scale_k=scale_k,
+            scaling_method=scaling_method,
         )
         return out
 
@@ -518,5 +540,6 @@ def fp8_attention_forward(
                     scale=scale,
                     scale_q=scale_q,
                     scale_k=scale_k,
+                    scaling_method=scaling_method,
                 )
                 return out
