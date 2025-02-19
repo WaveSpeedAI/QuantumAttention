@@ -228,18 +228,7 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
             }
             else {
                 if (kv_idx == kv_iters && g.N % K::kv_height != 0) {
-                    const int k_end = (g.N % K::kv_height) / kittens::TILE_ROW_DIM<QKDType>;
-                    const int k_rem = (g.N % K::kv_height) % kittens::TILE_ROW_DIM<QKDType>;
-
-                    #pragma unroll
-                    for (auto j = 0; j < (K::kv_height/kittens::TILE_ROW_DIM<QKDType>); j++) {
-                        auto k_idx = j;
-                        auto &attn_subtile = reinterpret_cast<rt_fl<16, 16>&>(att_block.tiles[0][j]);
-
-                        if      (k_idx >  k_end) { neg_infty  (attn_subtile); }
-                        else if (k_idx == k_end) { right_fill (attn_subtile, attn_subtile, kittens::TILE_ROW_DIM<QKDType>-k_rem, kittens::base_types::constants<float>::neg_infty()); }
-                        __syncwarp();
-                    }
+                    right_fill(att_block, att_block, g.N % K::kv_height, kittens::base_types::constants<float>::neg_infty());
                 }
             }
 
