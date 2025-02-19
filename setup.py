@@ -58,6 +58,7 @@ setup(
     },
     packages=find_packages(where="src"),
     python_requires=">=3.8",
+    include_package_data=True,
     install_requires=fetch_requirements(),
     extras_require={
         # optional dependencies, required by some features
