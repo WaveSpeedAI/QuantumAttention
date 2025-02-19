@@ -73,7 +73,23 @@ def _validate_tk_tma_input(
                 f"Expected query, key, and value to have dtype torch.float16 or torch.bfloat16, but got query.dtype: {query.dtype} instead.",
             )
     else:
-        return False, "NYI: scale_q and scale_k must be None"
+        if scale_k is None:
+            return False, "scale_q must be None if scale_k is None"
+        if query.dtype != torch.float8_e4m3fn:
+            return (
+                False,
+                f"Expected query to have dtype torch.float8_e4m3fn, but got query.dtype: {query.dtype} instead.",
+            )
+        if scale_q.shape != query.shape[:-1]:
+            return (
+                False,
+                f"Expected scale_q to have shape equal to query.shape[:-1], but got scale_q.shape: {scale_q.shape}, query.shape: {query.shape} instead.",
+            )
+        if scale_k.shape != key.shape[:-1]:
+            return (
+                False,
+                f"Expected scale_k to have shape equal to key.shape[:-1], but got scale_k.shape: {scale_k.shape}, key.shape: {key.shape} instead.",
+            )
     if query.dtype != key.dtype:
         return (
             False,
@@ -395,13 +411,24 @@ def _fp8_attention_forward_wrapper(
     scale: Optional[float] = None,
     scale_q: Optional[torch.Tensor] = None,
     scale_k: Optional[torch.Tensor] = None,
+    scaling_method: Optional[str] = None,
 ) -> Tensor:
     if (scale_q is None) != (scale_k is None):
         raise ValueError("scale_q and scale_k must be both provided or both not provided")
 
     if scale_q is None:
-        query, scale_q = dynamically_quantize_fp8(query, reduction_dim=-1)
-        key, scale_k = dynamically_quantize_fp8(key, reduction_dim=-1)
+        if scaling_method is None:
+            scaling_method = "none"
+        if scaling_method == "none":
+            q_max = torch.finfo(torch.float8_e4m3fn).max
+            query = query.clamp(-q_max, q_max).to(torch.float8_e4m3fn)
+            key = key.clamp(-q_max, q_max).to(torch.float8_e4m3fn)
+        elif scaling_method == "token-wise":
+            reduction_dim = query.dim() - 1
+            query, scale_q = dynamically_quantize_fp8(query, reduction_dim=reduction_dim)
+            key, scale_k = dynamically_quantize_fp8(key, reduction_dim=reduction_dim)
+        else:
+            raise ValueError(f"Unsupported scaling_method: {scaling_method}")
 
     return quantum_attn_ops.fp8_attention_forward(
         query,
@@ -427,6 +454,7 @@ def fp8_attention_forward(
     scale: Optional[float] = None,
     scale_q: Optional[torch.Tensor] = None,
     scale_k: Optional[torch.Tensor] = None,
+    scaling_method: Optional[str] = None,
 ) -> Tensor:
     if not torch._dynamo.is_dynamo_supported():
         raise RuntimeError("fp8_attention_forward requires dynamo support")
@@ -445,8 +473,17 @@ def fp8_attention_forward(
     from torch._subclasses.fake_tensor import is_fake
 
     if any(is_fake(x) for x in (query, key, value, attn_mask, scale_q, scale_k)):
-        out = _attention_forward_wrapper(
-            query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
+        out = _fp8_attention_forward_wrapper(
+            query,
+            key,
+            value,
+            attn_mask=attn_mask,
+            dropout_p=dropout_p,
+            is_causal=is_causal,
+            scale=scale,
+            scale_q=scale_q,
+            scale_k=scale_k,
+            scaling_method=scaling_method,
         )
         return out
 
@@ -465,6 +502,7 @@ def fp8_attention_forward(
             scale=scale,
             scale_q=scale_q,
             scale_k=scale_k,
+            scaling_method=scaling_method,
         )
         return out
 
@@ -479,6 +517,7 @@ def fp8_attention_forward(
             scale=scale,
             scale_q=scale_q,
             scale_k=scale_k,
+            scaling_method=scaling_method,
         )
         return out
 
@@ -501,5 +540,6 @@ def fp8_attention_forward(
                     scale=scale,
                     scale_q=scale_q,
                     scale_k=scale_k,
+                    scaling_method=scaling_method,
                 )
                 return out

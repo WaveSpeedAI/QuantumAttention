@@ -40,10 +40,6 @@ def tk_attention_forward_kernel(
     assert dropout_p == 0.0
     assert scale is None
 
-    query = query.contiguous()
-    key = key.contiguous()
-    value = value.contiguous()
-
     module = load_tk_attention_module(dtype=value.dtype)
     out = module.attention_forward(query, key, value, is_causal)[0]
     return out
@@ -52,6 +48,32 @@ def tk_attention_forward_kernel(
 tk_attention_forward = ExternKernelChoice(
     tk_attention_forward_kernel,
     name="quantum_attn_tk_attention_forward",
+    has_out_variant=False,
+)
+
+
+def tk_fp8_attention_forward_kernel(
+    query,
+    key,
+    value,
+    attn_mask=None,
+    dropout_p=0.0,
+    is_causal=False,
+    *,
+    scale=None,
+):
+    assert attn_mask is None
+    assert dropout_p == 0.0
+    assert scale is None
+
+    module = load_tk_attention_module(dtype=value.dtype, is_fp8=True)
+    out = module.attention_forward(query, key, value, is_causal)[0]
+    return out
+
+
+tk_fp8_attention_forward = ExternKernelChoice(
+    tk_fp8_attention_forward_kernel,
+    name="quantum_attn_tk_fp8_attention_forward",
     has_out_variant=False,
 )
 
@@ -861,7 +883,6 @@ def generate_attention_template_choices(
         )
 
 
-@register_lowering(quantum_attn_ops.attention_forward.default, type_promotion_kind=None)
 def tuned_attention_forward(
     query,
     key,
@@ -882,13 +903,14 @@ def tuned_attention_forward(
 
     use_tk_tma_kernel = (
         config.attention.enable_tk_tma_kernel
-        and query.get_dtype() in (torch.float16, torch.bfloat16)
+        and query.get_dtype() in (torch.float16, torch.bfloat16, torch.float8_e4m3fn)
         and checks.cuda_capability_compare("ge", 9, 0)
         and attn_mask is None
         and dropout_p == 0.0
         and scale is None
         and k1 == n2
         and k1 in (64, 128, 256)
+        and scale_q is None
     )
 
     use_triton_tma_kernel = (
@@ -900,6 +922,10 @@ def tuned_attention_forward(
         and dropout_p == 0.0
         and k1 == n2
         and k1 in (64, 128, 256)
+        and (
+            query.get_dtype() != torch.float8_e4m3fn
+            or (scale_q is not None and len(scale_q.get_size()) + 1 == len(query.get_size()))
+        )
     )
 
     use_aten_attention_kernel = use_aten_gemm_kernels()
@@ -907,13 +933,20 @@ def tuned_attention_forward(
     query, key, value = (ir.ExternKernel.realize_input(x) for x in (query, key, value))
     if use_tk_tma_kernel:
         query, key, value = (require_dense_memory(x) for x in (query, key, value))
+        if attn_mask is not None:
+            attn_mask = require_dense_memory(attn_mask)
     elif use_triton_tma_kernel:
         query = require_dense_memory(query, num_dims=1)
         key, value = (require_dense_memory(x, num_dims=2) for x in (key, value))
+        if attn_mask is not None:
+            attn_mask = require_dense_memory(attn_mask, num_dims=2)
 
     if scale_q is not None:
         scale_q, scale_k = (ir.ExternKernel.realize_input(x) for x in (scale_q, scale_k))
-        scale_q, scale_k = (require_dense_memory(x, num_dims=1) for x in (scale_q, scale_k))
+        if use_tk_tma_kernel:
+            scale_q, scale_k = (require_dense_memory(x) for x in (scale_q, scale_k))
+        elif use_triton_tma_kernel:
+            scale_q, scale_k = (require_dense_memory(x, num_dims=1) for x in (scale_q, scale_k))
     for x in (query, key, value, scale_q, scale_k, attn_mask):
         if x is not None:
             x.freeze_layout()
@@ -954,13 +987,22 @@ def tuned_attention_forward(
 
     choices = []
     if use_tk_tma_kernel:
-        choices.append(
-            tk_attention_forward.bind(
-                args,
-                layout=layout2,
-                **kwargs,
+        if query.get_dtype() == torch.float8_e4m3fn:
+            choices.append(
+                tk_fp8_attention_forward.bind(
+                    args,
+                    layout=layout2,
+                    **kwargs,
+                )
             )
-        )
+        else:
+            choices.append(
+                tk_attention_forward.bind(
+                    args,
+                    layout=layout2,
+                    **kwargs,
+                )
+            )
     if use_triton_tma_kernel:
         generate_attention_template_choices(
             choices, *args, layout2=layout2, enable_max_autotune=use_max_autotune(), **kwargs
@@ -987,13 +1029,16 @@ def tuned_attention_forward(
     return autotune_select_algorithm("quantum_attn_attention_forward", choices, args, layout2)
 
 
+register_lowering(quantum_attn_ops.attention_forward.default, type_promotion_kind=None)(tuned_attention_forward)
+
+
 @register_lowering(quantum_attn_ops.fp8_attention_forward.default, type_promotion_kind=None)
 def fp8_attention_forward(
     query,
     key,
     value,
-    scale_q,
-    scale_k,
+    scale_q=None,
+    scale_k=None,
     attn_mask=None,
     dropout_p=0.0,
     is_causal=False,

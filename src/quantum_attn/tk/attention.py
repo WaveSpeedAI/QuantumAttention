@@ -22,6 +22,12 @@ typedef bf16 DType;
 #error "Unsupported dtype"
 #endif
 
+#if defined(TK_ATTN_IS_FP8)
+typedef fp8e4m3 QKDType;
+#else
+typedef DType QKDType;
+#endif
+
 __device__ static inline float fast_exp2f(float x) {
     float y;
     asm volatile ( "ex2.approx.ftz.f32 %0, %1; " : "=f"(y) : "f"(x));
@@ -61,17 +67,17 @@ template<> struct fwd_attend_ker_tile_dims<256> {
 };
 
 template<int D> struct fwd_globals {
-    using q_tile    =         st<DType, fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::tile_width>;
-    using k_tile    =         st<DType, fwd_attend_ker_tile_dims<D>::kv_height, fwd_attend_ker_tile_dims<D>::tile_width>;
+    using q_tile    =         st<QKDType, fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::tile_width>;
+    using k_tile    =         st<QKDType, fwd_attend_ker_tile_dims<D>::kv_height, fwd_attend_ker_tile_dims<D>::tile_width>;
     using v_tile    =         st<DType, fwd_attend_ker_tile_dims<D>::kv_height, fwd_attend_ker_tile_dims<D>::tile_width>;
     // using l_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::tile_width>>;
     using o_tile    =         st<DType, fwd_attend_ker_tile_dims<D>::qo_height, fwd_attend_ker_tile_dims<D>::tile_width>;
 
-    using q_gl = gl<DType,  -1, -1, -1, -1, q_tile>;
-    using k_gl = gl<DType,  -1, -1, -1, -1, k_tile>;
-    using v_gl = gl<DType,  -1, -1, -1, -1, v_tile>;
-    // using l_gl = gl<float, -1, -1, -1, -1, l_col_vec>;
-    using o_gl = gl<DType,  -1, -1, -1, -1, o_tile>;
+    using q_gl = gl<QKDType,  -1, -1, -1, D, q_tile>;
+    using k_gl = gl<QKDType,  -1, -1, -1, D, k_tile>;
+    using v_gl = gl<DType,  -1, -1, -1, D, v_tile>;
+    // using l_gl = gl<float, -1, -1, 1, -1, l_col_vec>;
+    using o_gl = gl<DType,  -1, -1, -1, D, o_tile>;
 
     q_gl q;
     k_gl k;
@@ -95,17 +101,21 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
     using K = fwd_attend_ker_tile_dims<D>;
 
-    using q_tile    =         st<DType, K::qo_height, K::tile_width>;
-    using k_tile    =         st<DType, K::kv_height, K::tile_width>;
+    using q_tile    =         st<QKDType, K::qo_height, K::tile_width>;
+    using k_tile    =         st<QKDType, K::kv_height, K::tile_width>;
     using v_tile    =         st<DType, K::kv_height, K::tile_width>;
     // using l_col_vec = col_vec<st_fl<K::qo_height, K::tile_width>>;
     using o_tile    =         st<DType, K::qo_height, K::tile_width>;
 
-    q_tile    (&q_smem)[CONSUMER_WARPGROUPS] = al.allocate<q_tile, CONSUMER_WARPGROUPS>();
+    union TileUnion {
+        q_tile q;
+        o_tile o;
+    };
+
+    TileUnion (&q_o_smem)[CONSUMER_WARPGROUPS] = al.allocate<TileUnion, CONSUMER_WARPGROUPS>();
     k_tile    (&k_smem)[K::stages]           = al.allocate<k_tile, K::stages          >();
     v_tile    (&v_smem)[K::stages]           = al.allocate<v_tile, K::stages          >();
     // l_col_vec (&l_smem)[CONSUMER_WARPGROUPS] = al.allocate<l_col_vec, CONSUMER_WARPGROUPS>();
-    auto      (*o_smem)                      = reinterpret_cast<o_tile(*)>(q_smem);
 
     int kv_blocks   = (g.N + K::kv_height - 1) / (K::kv_height);
     int kv_head_idx = blockIdx.y / g.hr;
@@ -120,11 +130,11 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
             init_semaphore(compute_done[j], CONSUMER_WARPGROUPS, 0);
         }
 
-        tma::expect_bytes(qsmem_semaphore, sizeof(q_smem));
+        tma::expect_bytes(qsmem_semaphore, sizeof(q_tile) * CONSUMER_WARPGROUPS);
 
         for (int wg = 0; wg < CONSUMER_WARPGROUPS; wg++) {
             coord<q_tile> q_tile_idx = {blockIdx.z, blockIdx.y, (seq_idx) + wg, 0};
-            tma::load_async(q_smem[wg], g.q, q_tile_idx, qsmem_semaphore);
+            tma::load_async(q_o_smem[wg].q, g.q, q_tile_idx, qsmem_semaphore);
         }
 
         for (int j = 0; j < K::stages - 1; j++) {
@@ -145,20 +155,20 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
         int kv_iters;
         if constexpr (is_causal) {
-            kv_iters = (seq_idx * (K::qo_height/kittens::TILE_ROW_DIM<DType>)) - 1 + (CONSUMER_WARPGROUPS * (K::qo_height/kittens::TILE_ROW_DIM<DType>));
-            kv_iters = ((kv_iters / (K::kv_height/kittens::TILE_ROW_DIM<DType>)) == 0) ? (0) : ((kv_iters / (K::kv_height/kittens::TILE_ROW_DIM<DType>)) - 1);
+            kv_iters = (seq_idx * K::qo_height) - 1 + (CONSUMER_WARPGROUPS * K::qo_height);
+            kv_iters = ((kv_iters / K::kv_height) == 0) ? (0) : ((kv_iters / K::kv_height) - 1);
         }
         else { kv_iters = kv_blocks-2; }
 
         if(warpid == NUM_WORKERS-4) {
             for (auto kv_idx = pipe_idx - 1; kv_idx <= kv_iters; kv_idx++) {
-                coord<k_tile> kv_tile_idx = {blockIdx.z, kv_head_idx, kv_idx + 1, 0};
+                coord<k_tile> kv_tile_idx = {blockIdx.z, kv_head_idx, kv_idx+1, 0};
                 tma::expect_bytes(k_smem_arrived[(kv_idx+1)%K::stages], sizeof(k_tile));
                 tma::load_async(k_smem[(kv_idx+1)%K::stages], g.k, kv_tile_idx, k_smem_arrived[(kv_idx+1)%K::stages]);
                 tma::expect_bytes(v_smem_arrived[(kv_idx+1)%K::stages], sizeof(v_tile));
                 tma::load_async(v_smem[(kv_idx+1)%K::stages], g.v, kv_tile_idx, v_smem_arrived[(kv_idx+1)%K::stages]);
 
-                wait(compute_done[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
+                wait(compute_done[(kv_idx-(pipe_idx-1))%K::stages], ((kv_idx-(pipe_idx-1))/K::stages)%2);
             }
         }
     }
@@ -168,7 +178,8 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
         rt_fl<16, K::tile_width> o_reg;
 
-        col_vec<rt_fl<16, K::kv_height>> max_vec, norm_vec, max_vec_last_scaled, max_vec_scaled;
+        // col_vec<rt_fl<16, K::kv_height>> max_vec, norm_vec, max_vec_last_scaled, max_vec_scaled;
+        col_vec<rt_fl<16, K::kv_height>> max_vec, norm_vec, max_vec_last_scaled;
 
         neg_infty(max_vec);
         zero(norm_vec);
@@ -176,19 +187,21 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
         int kv_iters;
         if constexpr (is_causal) {
-            kv_iters = (seq_idx * 4) - 1 + (CONSUMER_WARPGROUPS * 4);
-            kv_iters = (kv_iters/(K::kv_height/kittens::TILE_ROW_DIM<DType>));
+            kv_iters = (seq_idx * K::qo_height) - 1 + (CONSUMER_WARPGROUPS * K::qo_height);
+            kv_iters = (kv_iters / K::kv_height);
         }
         else { kv_iters = kv_blocks - 1; }
 
         wait(qsmem_semaphore, 0);
 
         for (auto kv_idx = 0; kv_idx <= kv_iters; kv_idx++) {
+            col_vec<rt_fl<16, K::kv_height>> max_vec_scaled;
+
             rt_fl<16, K::kv_height>  att_block;
             rt<DType, 16, K::kv_height>  att_block_mma;
 
             wait(k_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
-            warpgroup::mm_ABt(att_block, q_smem[warpgroupid], k_smem[(kv_idx)%K::stages]);
+            warpgroup::mm_ABt(att_block, q_o_smem[warpgroupid].q, k_smem[(kv_idx)%K::stages]);
 
             copy(max_vec_last_scaled, max_vec);
             if constexpr (D == 64)       { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.125f); }
@@ -199,11 +212,11 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
             if constexpr (is_causal) {
                 if (kv_idx == kv_iters-1 || kv_idx == kv_iters) {
-                    const int q_blk = (seq_idx * (K::qo_height/kittens::TILE_ROW_DIM<DType>)) + warpid;
-                        int k_blk = (kv_idx * (K::kv_height/kittens::TILE_ROW_DIM<DType>));
+                    const int q_blk = (seq_idx * (K::qo_height/kittens::TILE_ROW_DIM<QKDType>)) + warpid;
+                        int k_blk = (kv_idx * (K::kv_height/kittens::TILE_ROW_DIM<QKDType>));
 
                     #pragma unroll
-                    for (auto j = 0; j < (K::kv_height/kittens::TILE_ROW_DIM<DType>); j++) {
+                    for (auto j = 0; j < (K::kv_height/kittens::TILE_ROW_DIM<QKDType>); j++) {
                         auto k_idx = k_blk + j;
                         auto &attn_subtile = reinterpret_cast<rt_fl<16, 16>&>(att_block.tiles[0][j]);
 
@@ -215,18 +228,7 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
             }
             else {
                 if (kv_idx == kv_iters && g.N % K::kv_height != 0) {
-                    const int k_end = (g.N % K::kv_height) / kittens::TILE_ROW_DIM<DType>;
-                    const int k_rem = (g.N % K::kv_height) % kittens::TILE_ROW_DIM<DType>;
-
-                    #pragma unroll
-                    for (auto j = 0; j < (K::kv_height/kittens::TILE_ROW_DIM<DType>); j++) {
-                        auto k_idx = j;
-                        auto &attn_subtile = reinterpret_cast<rt_fl<16, 16>&>(att_block.tiles[0][j]);
-
-                        if      (k_idx >  k_end) { neg_infty  (attn_subtile); }
-                        else if (k_idx == k_end) { right_fill (attn_subtile, attn_subtile, kittens::TILE_ROW_DIM<DType>-k_rem, kittens::base_types::constants<float>::neg_infty()); }
-                        __syncwarp();
-                    }
+                    right_fill(att_block, att_block, g.N % K::kv_height, kittens::base_types::constants<float>::neg_infty());
                 }
             }
 
@@ -266,12 +268,12 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         }
 
         div_row(o_reg, o_reg, norm_vec);
-        warpgroup::store(o_smem[warpgroupid], o_reg);
+        warpgroup::store(q_o_smem[warpgroupid].o, o_reg);
         warpgroup::sync(warpgroupid+4);
 
         if (warpid % 4 == 0) {
             coord<o_tile> o_tile_idx = {blockIdx.z, blockIdx.y, (seq_idx) + warpgroupid, 0};
-            tma::store_async(g.o, o_smem[warpgroupid], o_tile_idx);
+            tma::store_async(g.o, q_o_smem[warpgroupid].o, o_tile_idx);
         }
 
         // mul(max_vec_scaled,   max_vec_scaled, 0.69314718056f);
@@ -297,11 +299,11 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 #include <iostream>
 
 std::vector<torch::Tensor>
-attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal)
+attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::Tensor &v , bool causal)
 {
-    CHECK_INPUT(q);
-    CHECK_INPUT(k);
-    CHECK_INPUT(v);
+    CHECK_CUDA(q);
+    CHECK_CUDA(k);
+    CHECK_CUDA(v);
 
     TORCH_CHECK(q.device() == k.device(), "Q and K tensors must be on the same device");
     TORCH_CHECK(q.device() == v.device(), "Q and V tensors must be on the same device");
@@ -339,14 +341,18 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
 
     torch::DeviceGuard device_guard(q.device());
 
+    torch:: Tensor q_ = q.contiguous();
+    torch:: Tensor k_ = k.contiguous();
+    torch:: Tensor v_ = v.contiguous();
+
     auto hr = qo_heads / kv_heads;
 
-    void* q_ptr = q.data_ptr();
-    void* k_ptr = k.data_ptr();
-    void* v_ptr = v.data_ptr();
+    void* q_ptr = q_.data_ptr();
+    void* k_ptr = k_.data_ptr();
+    void* v_ptr = v_.data_ptr();
 
-    DType*  d_q = reinterpret_cast<DType*>(q_ptr);
-    DType*  d_k = reinterpret_cast<DType*>(k_ptr);
+    QKDType*  d_q = reinterpret_cast<QKDType*>(q_ptr);
+    QKDType*  d_k = reinterpret_cast<QKDType*>(k_ptr);
     DType*  d_v = reinterpret_cast<DType*>(v_ptr);
 
     // for the returned outputs
@@ -355,11 +361,14 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
                                         static_cast<uint>(seq_len_q),
                                         static_cast<uint>(head_dim)}, v.options().memory_format(at::MemoryFormat::Contiguous));
 
-    // torch::Tensor l_vec = torch::empty({static_cast<uint>(batch),
-    //                                     static_cast<uint>(qo_heads),
-    //                                     static_cast<uint>(seq_len_q),
-    //                                     static_cast<uint>(1)},
-    //                                     torch::TensorOptions().dtype(torch::kFloat).device(q.device()).memory_format(at::MemoryFormat::Contiguous));
+    // auto l_vec_stride_h = (seq_len_q * sizeof(float) + 15) / 16 * 16 / sizeof(float);
+    // torch::Tensor l_vec = torch::empty_strided({static_cast<uint>(batch),
+    //                                             static_cast<uint>(qo_heads),
+    //                                             static_cast<uint>(seq_len_q)},
+    //                                            {static_cast<uint>(qo_heads * l_vec_stride_h),
+    //                                             static_cast<uint>(l_vec_stride_h),
+    //                                             1},
+    //                                            torch::dtype(torch::kFloat).device(q.device()));
 
     DType*  o_ptr = reinterpret_cast<DType*>(o.data_ptr());
     DType*  d_o   = reinterpret_cast<DType*>(o_ptr);
@@ -375,32 +384,32 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
         constexpr int NUM_WARPGROUPS      = (CONSUMER_WARPGROUPS+PRODUCER_WARPGROUPS);
         constexpr int NUM_WORKERS         = (NUM_WARPGROUPS*kittens::WARPGROUP_WARPS);
 
-        using q_tile    =         st<DType, fwd_attend_ker_tile_dims<64>::qo_height, fwd_attend_ker_tile_dims<64>::tile_width>;
-        using k_tile    =         st<DType, fwd_attend_ker_tile_dims<64>::kv_height, fwd_attend_ker_tile_dims<64>::tile_width>;
+        using q_tile    =         st<QKDType, fwd_attend_ker_tile_dims<64>::qo_height, fwd_attend_ker_tile_dims<64>::tile_width>;
+        using k_tile    =         st<QKDType, fwd_attend_ker_tile_dims<64>::kv_height, fwd_attend_ker_tile_dims<64>::tile_width>;
         using v_tile    =         st<DType, fwd_attend_ker_tile_dims<64>::kv_height, fwd_attend_ker_tile_dims<64>::tile_width>;
         // using l_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<64>::qo_height, fwd_attend_ker_tile_dims<64>::tile_width>>;
         using o_tile    =         st<DType, fwd_attend_ker_tile_dims<64>::qo_height, fwd_attend_ker_tile_dims<64>::tile_width>;
 
-        using q_global = gl<DType,  -1, -1, -1, -1, q_tile>;
-        using k_global = gl<DType,  -1, -1, -1, -1, k_tile>;
-        using v_global = gl<DType,  -1, -1, -1, -1, v_tile>;
-        // using l_global = gl<float, -1, -1, -1, -1, l_col_vec>;
-        using o_global = gl<DType,  -1, -1, -1, -1, o_tile>;
+        using q_global = gl<QKDType,  -1, -1, -1, 64, q_tile>;
+        using k_global = gl<QKDType,  -1, -1, -1, 64, k_tile>;
+        using v_global = gl<DType,  -1, -1, -1, 64, v_tile>;
+        // using l_global = gl<float, -1, -1, 1, -1, l_col_vec>;
+        using o_global = gl<DType,  -1, -1, -1, 64, o_tile>;
 
         using globals      = fwd_globals<64>;
 
-        q_global qg_arg{d_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), 64U};
-        k_global kg_arg{d_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), 64U};
-        v_global vg_arg{d_v, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), 64U};
-        // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U,  static_cast<unsigned int>(seq_len_q)};
-        o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), 64U};
+        q_global qg_arg{d_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), nullptr};
+        k_global kg_arg{d_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), nullptr};
+        v_global vg_arg{d_v, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), nullptr};
+        // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), nullptr,  static_cast<unsigned int>(l_vec_stride_h)};
+        o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), nullptr};
 
         globals g{qg_arg, kg_arg, vg_arg/* , lg_arg */, og_arg, static_cast<int>(seq_len_kv), static_cast<int>(hr)};
 
         auto mem_size = kittens::MAX_SHARED_MEMORY;
         // auto threads  = NUM_WORKERS * kittens::WARP_THREADS;
 
-        constexpr int block_size_m = CONSUMER_WARPGROUPS*kittens::TILE_ROW_DIM<DType>*4;
+        constexpr int block_size_m = CONSUMER_WARPGROUPS*fwd_attend_ker_tile_dims<64>::qo_height;
         int num_m_blocks = (seq_len_q + block_size_m - 1) / block_size_m;
         dim3 grid(num_m_blocks, qo_heads, batch);
 
@@ -430,32 +439,32 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
         constexpr int NUM_WARPGROUPS      = (CONSUMER_WARPGROUPS+PRODUCER_WARPGROUPS);
         constexpr int NUM_WORKERS         = (NUM_WARPGROUPS*kittens::WARPGROUP_WARPS);
 
-        using q_tile    =         st<DType, fwd_attend_ker_tile_dims<128>::qo_height, fwd_attend_ker_tile_dims<128>::tile_width>;
-        using k_tile    =         st<DType, fwd_attend_ker_tile_dims<128>::kv_height, fwd_attend_ker_tile_dims<128>::tile_width>;
+        using q_tile    =         st<QKDType, fwd_attend_ker_tile_dims<128>::qo_height, fwd_attend_ker_tile_dims<128>::tile_width>;
+        using k_tile    =         st<QKDType, fwd_attend_ker_tile_dims<128>::kv_height, fwd_attend_ker_tile_dims<128>::tile_width>;
         using v_tile    =         st<DType, fwd_attend_ker_tile_dims<128>::kv_height, fwd_attend_ker_tile_dims<128>::tile_width>;
         // using l_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<128>::qo_height, fwd_attend_ker_tile_dims<128>::tile_width>>;
         using o_tile    =         st<DType, fwd_attend_ker_tile_dims<128>::qo_height, fwd_attend_ker_tile_dims<128>::tile_width>;
 
-        using q_global = gl<DType,  -1, -1, -1, -1, q_tile>;
-        using k_global = gl<DType,  -1, -1, -1, -1, k_tile>;
-        using v_global = gl<DType,  -1, -1, -1, -1, v_tile>;
-        // using l_global = gl<float, -1, -1, -1, -1, l_col_vec>;
-        using o_global = gl<DType,  -1, -1, -1, -1, o_tile>;
+        using q_global = gl<QKDType,  -1, -1, -1, 128, q_tile>;
+        using k_global = gl<QKDType,  -1, -1, -1, 128, k_tile>;
+        using v_global = gl<DType,  -1, -1, -1, 128, v_tile>;
+        // using l_global = gl<float, -1, -1, 1, -1, l_col_vec>;
+        using o_global = gl<DType,  -1, -1, -1, 128, o_tile>;
 
         using globals      = fwd_globals<128>;
 
-        q_global qg_arg{d_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), 128U};
-        k_global kg_arg{d_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), 128U};
-        v_global vg_arg{d_v, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), 128U};
-        // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U,   static_cast<unsigned int>(seq_len_q)};
-        o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), 128U};
+        q_global qg_arg{d_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), nullptr};
+        k_global kg_arg{d_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), nullptr};
+        v_global vg_arg{d_v, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), nullptr};
+        // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), nullptr,   static_cast<unsigned int>(l_vec_stride_h)};
+        o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), nullptr};
 
         globals g{qg_arg, kg_arg, vg_arg/* , lg_arg */, og_arg, static_cast<int>(seq_len_kv), static_cast<int>(hr)};
 
         auto mem_size = kittens::MAX_SHARED_MEMORY;
         // auto threads  = NUM_WORKERS * kittens::WARP_THREADS;
 
-        constexpr int block_size_m = CONSUMER_WARPGROUPS*kittens::TILE_ROW_DIM<DType>*4;
+        constexpr int block_size_m = CONSUMER_WARPGROUPS*fwd_attend_ker_tile_dims<128>::qo_height;
         int num_m_blocks = (seq_len_q + block_size_m - 1) / block_size_m;
         dim3 grid(num_m_blocks, qo_heads, batch);
 
@@ -485,32 +494,32 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
         constexpr int NUM_WARPGROUPS      = (CONSUMER_WARPGROUPS+PRODUCER_WARPGROUPS);
         constexpr int NUM_WORKERS         = (NUM_WARPGROUPS*kittens::WARPGROUP_WARPS);
 
-        using q_tile    =         st<DType, fwd_attend_ker_tile_dims<256>::qo_height, fwd_attend_ker_tile_dims<256>::tile_width>;
-        using k_tile    =         st<DType, fwd_attend_ker_tile_dims<256>::kv_height, fwd_attend_ker_tile_dims<256>::tile_width>;
+        using q_tile    =         st<QKDType, fwd_attend_ker_tile_dims<256>::qo_height, fwd_attend_ker_tile_dims<256>::tile_width>;
+        using k_tile    =         st<QKDType, fwd_attend_ker_tile_dims<256>::kv_height, fwd_attend_ker_tile_dims<256>::tile_width>;
         using v_tile    =         st<DType, fwd_attend_ker_tile_dims<256>::kv_height, fwd_attend_ker_tile_dims<256>::tile_width>;
         // using l_col_vec = col_vec<st_fl<fwd_attend_ker_tile_dims<256>::qo_height, fwd_attend_ker_tile_dims<256>::tile_width>>;
         using o_tile    =         st<DType, fwd_attend_ker_tile_dims<256>::qo_height, fwd_attend_ker_tile_dims<256>::tile_width>;
 
-        using q_global = gl<DType,  -1, -1, -1, -1, q_tile>;
-        using k_global = gl<DType,  -1, -1, -1, -1, k_tile>;
-        using v_global = gl<DType,  -1, -1, -1, -1, v_tile>;
-        // using l_global = gl<float, -1, -1, -1, -1, l_col_vec>;
-        using o_global = gl<DType,  -1, -1, -1, -1, o_tile>;
+        using q_global = gl<QKDType,  -1, -1, -1, 256, q_tile>;
+        using k_global = gl<QKDType,  -1, -1, -1, 256, k_tile>;
+        using v_global = gl<DType,  -1, -1, -1, 256, v_tile>;
+        // using l_global = gl<float, -1, -1, 1, -1, l_col_vec>;
+        using o_global = gl<DType,  -1, -1, -1, 256, o_tile>;
 
         using globals      = fwd_globals<256>;
 
-        q_global qg_arg{d_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), 256U};
-        k_global kg_arg{d_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), 256U};
-        v_global vg_arg{d_v, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), 256U};
-        // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), 1U,   static_cast<unsigned int>(seq_len_q)};
-        o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), 256U};
+        q_global qg_arg{d_q, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), nullptr};
+        k_global kg_arg{d_k, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), nullptr};
+        v_global vg_arg{d_v, static_cast<unsigned int>(batch), static_cast<unsigned int>(kv_heads), static_cast<unsigned int>(seq_len_kv), nullptr};
+        // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), nullptr,   static_cast<unsigned int>(l_vec_stride_h)};
+        o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), nullptr};
 
         globals g{qg_arg, kg_arg, vg_arg/* , lg_arg */, og_arg, static_cast<int>(seq_len_kv), static_cast<int>(hr)};
 
         auto mem_size = kittens::MAX_SHARED_MEMORY;
         // auto threads  = NUM_WORKERS * kittens::WARP_THREADS;
 
-        constexpr int block_size_m = CONSUMER_WARPGROUPS*kittens::TILE_ROW_DIM<DType>*4;
+        constexpr int block_size_m = CONSUMER_WARPGROUPS*fwd_attend_ker_tile_dims<256>::qo_height;
         int num_m_blocks = (seq_len_q + block_size_m - 1) / block_size_m;
         dim3 grid(num_m_blocks, qo_heads, batch);
 
@@ -542,7 +551,7 @@ attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal
 
 
 @functools.cache
-def load_tk_attention_module(dtype):
+def load_tk_attention_module(dtype, is_fp8=False):
     extra_cuda_cflags = [
         "-std=c++20",
         # "-U__CUDA_NO_HALF_OPERATORS__",
@@ -572,13 +581,16 @@ def load_tk_attention_module(dtype):
     else:
         raise ValueError(f"Unsupported dtype: {dtype}")
 
+    if is_fp8:
+        extra_cuda_cflags.append("-DTK_ATTN_IS_FP8")
+
     old_torch_cuda_arch_list = os.getenv("TORCH_CUDA_ARCH_LIST")
     os.environ["TORCH_CUDA_ARCH_LIST"] = "9.0a"
     try:
         module = load_inline(
-            name=f"quantum_attn_tk_attention_{str(dtype).replace('torch.', '')}",
+            name=f"quantum_attn_tk_attention_dtype_{str(dtype).replace('torch.', '')}_is_fp8_{is_fp8}",
             cpp_sources=[
-                "std::vector<torch::Tensor> attention_forward(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool causal);"
+                "std::vector<torch::Tensor> attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::Tensor &v, bool causal);"
             ],
             cuda_sources=[TK_ATTENTION_SOURCE],
             extra_cflags=["-std=c++20", "-O3", "-DNDEBUG"],
