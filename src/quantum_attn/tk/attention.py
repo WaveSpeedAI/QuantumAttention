@@ -384,7 +384,7 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
     TORCH_CHECK(k.size(1) == kv_heads, "KV head dimension - idx 1 - must match for all inputs");
     TORCH_CHECK(v.size(1) == kv_heads, "KV head dimension - idx 1 - must match for all inputs");
 
-if TK_ATTN_IS_FP8
+#if TK_ATTN_IS_FP8
     TORCH_CHECK(scale_q.dtype() == torch::kFloat32, "Q scale tensor must be of type float32");
     TORCH_CHECK(scale_k.dtype() == torch::kFloat32, "K scale tensor must be of type float32");
 
