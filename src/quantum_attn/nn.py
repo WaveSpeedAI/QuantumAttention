@@ -72,10 +72,10 @@ def _validate_tk_tma_input(
     else:
         if scaling_method != "head-wise":
             return False, f"Unsupported scaling_method: {scaling_method}"
-        if query.dtype != torch.float8_e4m3fn:
+        if query.dtype not in (torch.float16, torch.bfloat16, torch.float8_e4m3fn):
             return (
                 False,
-                f"Expected query to have dtype torch.float8_e4m3fn, but got query.dtype: {query.dtype} instead.",
+                f"Expected query to have dtype torch.float16, torch.bfloat16, or torch.float8_e4m3fn, but got query.dtype: {query.dtype} instead.",
             )
     if query.dtype != key.dtype:
         return (
@@ -150,10 +150,10 @@ def _validate_triton_tma_sdpa_input(
     else:
         if scaling_method != "token-wise":
             return False, f"Unsupported scaling_method: {scaling_method}"
-        if query.dtype != torch.float8_e4m3fn:
+        if query.dtype not in (torch.float16, torch.bfloat16, torch.float8_e4m3fn):
             return (
                 False,
-                f"Expected query to have dtype torch.float8_e4m3fn, but got query.dtype: {query.dtype} instead.",
+                f"Expected query to have dtype torch.float16, torch.bfloat16, or torch.float8_e4m3fn, but got query.dtype: {query.dtype} instead.",
             )
     if query.dtype != key.dtype:
         return (
@@ -333,7 +333,7 @@ def attention_forward(
         query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
     )
     if not supported:
-        raise ValueError(reason)
+        raise ValueError(f"Unsupported input: {reason}")
 
     # if scale is None:
     #     scale = 1.0 / math.sqrt(query.size(-1))
