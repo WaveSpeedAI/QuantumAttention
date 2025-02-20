@@ -4,7 +4,6 @@ import quantum_attn
 import torch
 import torch.nn.functional as F
 from quantum_attn import quantum_attn_interface
-from quantum_attn.nn import can_use_attention_forward
 from torch.nn.attention import sdpa_kernel, SDPBackend
 
 if not torch.cuda.is_available():
@@ -32,6 +31,7 @@ def fp8_attention(query, key, value, is_causal=False):
 def _test_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, force_eager_fallback, is_fp8=False):
     if is_causal and S_Q != S_KV:
         pytest.skip("Causal attention is only supported for S_Q == S_KV")
+
     if is_fp8:
         attn_func = fp8_attention
     else:
@@ -42,18 +42,19 @@ def _test_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, force_eager_fa
     key = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
     value = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
 
-    supported, reason = can_use_attention_forward(query, key, value, is_causal=is_causal)
-    if not supported:
-        pytest.skip(reason)
-
-    fa_out = flash_attention(query, key, value, is_causal=is_causal)
-
     with quantum_attn.config.patch(
         {
             "attention.force_eager_fallback": force_eager_fallback,
         }
     ):
-        attn_out = attn_func(query, key, value, is_causal=is_causal)
+        try:
+            attn_out = attn_func(query, key, value, is_causal=is_causal)
+        except ValueError as e:
+            if "Unsupported input" in str(e):
+                pytest.skip(str(e))
+            raise
+
+    fa_out = flash_attention(query, key, value, is_causal=is_causal)
 
     rmse = torch.sqrt(F.mse_loss(attn_out, fa_out))
     print(f"RMSE: {rmse}")
@@ -102,21 +103,24 @@ def _test_benchmark_attn_func(D, dtype, device, is_causal, is_fp8=False):
     key = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
     value = torch.randn(B, H, S_KV, D, dtype=dtype, device=device)
 
-    supported, reason = can_use_attention_forward(query, key, value, is_causal=is_causal)
-    if not supported:
-        pytest.skip(reason)
+    def attention_fn():
+        if is_fp8:
+            fp8_attention(query, key, value, is_causal)
+        else:
+            vanilla_attention(query, key, value, is_causal)
+
+    try:
+        attention_fn()
+    except ValueError as e:
+        if "Unsupported input" in str(e):
+            pytest.skip(str(e))
+        raise
 
     def fa_fn():
         flash_attention(query, key, value, is_causal)
 
     def cudnn_sdpa_fn():
         cudnn_sdpa(query, key, value, is_causal)
-
-    def attention_fn():
-        if is_fp8:
-            fp8_attention(query, key, value, is_causal)
-        else:
-            vanilla_attention(query, key, value, is_causal)
 
     flops_per_matmul = 2 * B * H * S_Q * S_KV * D
     total_flops = 2 * flops_per_matmul

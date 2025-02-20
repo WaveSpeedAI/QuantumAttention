@@ -114,7 +114,10 @@ def fp8_attn_func(
     scale: float = None,
     scale_q: Optional[torch.Tensor] = None,
     scale_k: Optional[torch.Tensor] = None,
+    scaling_method: Optional[str] = None,
 ) -> torch.Tensor:
+    if scaling_method is None:
+        scaling_method = "head-wise"
     return fp8_attention_forward(
         query,
         key,
@@ -125,12 +128,13 @@ def fp8_attn_func(
         scale=scale,
         scale_q=scale_q,
         scale_k=scale_k,
+        scaling_method=scaling_method,
     )
 
 
 @_define_quantum_attn_composite_implicit_autograd_op(
     "fp8_attn_func_with_fallback",
-    "(Tensor query, Tensor key, Tensor value, Tensor? attn_mask=None, float dropout_p=0.0, bool is_causal=False, *, float? scale=None) -> Tensor",
+    "(Tensor query, Tensor key, Tensor value, Tensor? attn_mask=None, float dropout_p=0.0, bool is_causal=False, *, float? scale=None, str? scaling_method=None) -> Tensor",
 )
 def fp8_attn_func_with_fallback(
     query: torch.Tensor,
@@ -141,9 +145,19 @@ def fp8_attn_func_with_fallback(
     is_causal: bool = False,
     *,
     scale: float = None,
+    scaling_method: Optional[str] = None,
 ) -> torch.Tensor:
+    if scaling_method is None:
+        scaling_method = "head-wise"
     if can_use_attention_forward(
-        query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
+        query,
+        key,
+        value,
+        attn_mask=attn_mask,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+        scale=scale,
+        scaling_method=scaling_method,
     )[0]:
         return fp8_attn_func(
             query,
@@ -153,6 +167,7 @@ def fp8_attn_func_with_fallback(
             dropout_p=dropout_p,
             is_causal=is_causal,
             scale=scale,
+            scaling_method=scaling_method,
         )
 
     return torch_sdpa(
@@ -207,7 +222,14 @@ def fp8_token_wise_attn_func_with_fallback(
     scale: float = None,
 ) -> torch.Tensor:
     if can_use_attention_forward(
-        query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
+        query,
+        key,
+        value,
+        attn_mask=attn_mask,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+        scale=scale,
+        scaling_method="token-wise",
     )[0]:
         return fp8_token_wise_attn_func(
             query,
@@ -217,6 +239,7 @@ def fp8_token_wise_attn_func_with_fallback(
             dropout_p=dropout_p,
             is_causal=is_causal,
             scale=scale,
+            scaling_method="token-wise",
         )
 
     return torch_sdpa(

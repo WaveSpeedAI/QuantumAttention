@@ -20,8 +20,15 @@ def _dynamically_quantize_fp8(t: torch.Tensor, *, reduction_dim=-1) -> Tuple[tor
 
 
 def dynamically_quantize_fp8(t: torch.Tensor, *, reduction_dim=-1) -> Tuple[torch.Tensor, torch.Tensor]:
+    from torch._subclasses.fake_tensor import is_fake
+
+    if any(is_fake(x) for x in (t,)):
+        out = _dynamically_quantize_fp8(t, reduction_dim=reduction_dim)
+        return out
+
     if torch.compiler.is_dynamo_compiling():
-        return _dynamically_quantize_fp8(t, reduction_dim=reduction_dim)
+        out = _dynamically_quantize_fp8(t, reduction_dim=reduction_dim)
+        return out
 
     with _set_compilation_env():
         with torch._dynamo.utils.disable_cache_limit():
@@ -50,8 +57,7 @@ def _validate_tk_tma_input(
     dropout_p=0.0,
     is_causal=False,
     scale=None,
-    scale_q=None,
-    scale_k=None,
+    scaling_method=None,
 ) -> Tuple[bool, str]:
     if attn_mask is not None:
         return False, "NYI: attn_mask must be None"
@@ -59,9 +65,7 @@ def _validate_tk_tma_input(
         return False, "NYI: dropout_p must be 0.0"
     if scale is not None:
         return False, "NYI: scale must be None"
-    if scale_q is None:
-        if scale_k is not None:
-            return False, "scale_k must be None if scale_q is None"
+    if scaling_method is None:
         if query.dtype != key.dtype or query.dtype != value.dtype:
             return (
                 False,
@@ -73,22 +77,12 @@ def _validate_tk_tma_input(
                 f"Expected query, key, and value to have dtype torch.float16 or torch.bfloat16, but got query.dtype: {query.dtype} instead.",
             )
     else:
-        if scale_k is None:
-            return False, "scale_q must be None if scale_k is None"
-        if query.dtype != torch.float8_e4m3fn:
+        if scaling_method != "head-wise":
+            return False, f"Unsupported scaling_method: {scaling_method}"
+        if query.dtype not in (torch.float16, torch.bfloat16, torch.float8_e4m3fn):
             return (
                 False,
-                f"Expected query to have dtype torch.float8_e4m3fn, but got query.dtype: {query.dtype} instead.",
-            )
-        if scale_q.shape != query.shape[:-1]:
-            return (
-                False,
-                f"Expected scale_q to have shape equal to query.shape[:-1], but got scale_q.shape: {scale_q.shape}, query.shape: {query.shape} instead.",
-            )
-        if scale_k.shape != key.shape[:-1]:
-            return (
-                False,
-                f"Expected scale_k to have shape equal to key.shape[:-1], but got scale_k.shape: {scale_k.shape}, key.shape: {key.shape} instead.",
+                f"Expected query to have dtype torch.float16, torch.bfloat16, or torch.float8_e4m3fn, but got query.dtype: {query.dtype} instead.",
             )
     if query.dtype != key.dtype:
         return (
@@ -143,16 +137,13 @@ def _validate_triton_tma_sdpa_input(
     dropout_p=0.0,
     is_causal=False,
     scale=None,
-    scale_q=None,
-    scale_k=None,
+    scaling_method=None,
 ) -> Tuple[bool, str]:
     if attn_mask is not None:
         return False, "NYI: attn_mask must be None"
     if dropout_p != 0.0:
         return False, "NYI: dropout_p must be 0.0"
-    if scale_q is None:
-        if scale_k is not None:
-            return False, "scale_k must be None if scale_q is None"
+    if scaling_method is None:
         if query.dtype != key.dtype or query.dtype != value.dtype:
             return (
                 False,
@@ -164,22 +155,12 @@ def _validate_triton_tma_sdpa_input(
                 f"Expected query, key, and value to have dtype torch.float16 or torch.bfloat16, but got query.dtype: {query.dtype} instead.",
             )
     else:
-        if scale_k is None:
-            return False, "scale_q must be None if scale_k is None"
-        if query.dtype != torch.float8_e4m3fn:
+        if scaling_method != "token-wise":
+            return False, f"Unsupported scaling_method: {scaling_method}"
+        if query.dtype not in (torch.float16, torch.bfloat16, torch.float8_e4m3fn):
             return (
                 False,
-                f"Expected query to have dtype torch.float8_e4m3fn, but got query.dtype: {query.dtype} instead.",
-            )
-        if scale_q.shape != query.shape[:-1]:
-            return (
-                False,
-                f"Expected scale_q to have shape equal to query.shape[:-1], but got scale_q.shape: {scale_q.shape}, query.shape: {query.shape} instead.",
-            )
-        if scale_k.shape != key.shape[:-1]:
-            return (
-                False,
-                f"Expected scale_k to have shape equal to key.shape[:-1], but got scale_k.shape: {scale_k.shape}, key.shape: {key.shape} instead.",
+                f"Expected query to have dtype torch.float16, torch.bfloat16, or torch.float8_e4m3fn, but got query.dtype: {query.dtype} instead.",
             )
     if query.dtype != key.dtype:
         return (
@@ -238,12 +219,15 @@ def can_use_tk_tma_attention_forward(
     is_causal: bool = False,
     *,
     scale: Optional[float] = None,
+    scaling_method: Optional[str] = None,
 ) -> Tuple[bool, str]:
     supported, reason = _pre_check_can_use_tk_tma_attention_forward(device=query.device)
     if not supported:
         return False, reason
 
-    valid, reason = _validate_tk_tma_input(query, key, value, attn_mask, dropout_p, is_causal, scale)
+    valid, reason = _validate_tk_tma_input(
+        query, key, value, attn_mask, dropout_p, is_causal, scale, scaling_method=scaling_method
+    )
     if not valid:
         return False, reason
 
@@ -274,12 +258,15 @@ def can_use_triton_tma_attention_forward(
     is_causal: bool = False,
     *,
     scale: Optional[float] = None,
+    scaling_method: Optional[str] = None,
 ) -> Tuple[bool, str]:
     supported, reason = _pre_check_can_use_triton_tma_attention_forward(device=query.device)
     if not supported:
         return False, reason
 
-    valid, reason = _validate_triton_tma_sdpa_input(query, key, value, attn_mask, dropout_p, is_causal, scale)
+    valid, reason = _validate_triton_tma_sdpa_input(
+        query, key, value, attn_mask, dropout_p, is_causal, scale, scaling_method=scaling_method
+    )
     if not valid:
         return False, reason
 
@@ -300,6 +287,7 @@ def can_use_attention_forward(
     is_causal: bool = False,
     *,
     scale: Optional[float] = None,
+    scaling_method: Optional[str] = None,
 ) -> Tuple[bool, str]:
     if _skip_supported_check():
         return True, ""
@@ -309,7 +297,9 @@ def can_use_attention_forward(
     ]
     reasons = []
     for prefix, func in prefix_and_funcs:
-        supported, reason = func(query, key, value, attn_mask, dropout_p, is_causal, scale=scale)
+        supported, reason = func(
+            query, key, value, attn_mask, dropout_p, is_causal, scale=scale, scaling_method=scaling_method
+        )
         if supported:
             return True, ""
         reasons.append((f"{prefix}: {reason}"))
@@ -350,7 +340,7 @@ def attention_forward(
         query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
     )
     if not supported:
-        raise ValueError(reason)
+        raise ValueError(f"Unsupported input: {reason}")
 
     # if scale is None:
     #     scale = 1.0 / math.sqrt(query.size(-1))
@@ -417,18 +407,14 @@ def _fp8_attention_forward_wrapper(
         raise ValueError("scale_q and scale_k must be both provided or both not provided")
 
     if scale_q is None:
-        if scaling_method is None:
-            scaling_method = "none"
-        if scaling_method == "none":
-            q_max = torch.finfo(torch.float8_e4m3fn).max
-            query = query.clamp(-q_max, q_max).to(torch.float8_e4m3fn)
-            key = key.clamp(-q_max, q_max).to(torch.float8_e4m3fn)
+        if scaling_method == "head-wise":
+            reduction_dim = [query.dim() - 2, query.dim() - 1]
         elif scaling_method == "token-wise":
             reduction_dim = query.dim() - 1
-            query, scale_q = dynamically_quantize_fp8(query, reduction_dim=reduction_dim)
-            key, scale_k = dynamically_quantize_fp8(key, reduction_dim=reduction_dim)
         else:
             raise ValueError(f"Unsupported scaling_method: {scaling_method}")
+        query, scale_q = _dynamically_quantize_fp8(query, reduction_dim=reduction_dim)
+        key, scale_k = _dynamically_quantize_fp8(key, reduction_dim=reduction_dim)
 
     return quantum_attn_ops.fp8_attention_forward(
         query,
@@ -462,7 +448,14 @@ def fp8_attention_forward(
         raise RuntimeError("fp8_attention_forward requires inductor support")
 
     supported, reason = can_use_attention_forward(
-        query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
+        query,
+        key,
+        value,
+        attn_mask=attn_mask,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+        scale=scale,
+        scaling_method=scaling_method,
     )
     if not supported:
         raise ValueError(reason)
