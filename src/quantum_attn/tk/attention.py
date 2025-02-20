@@ -51,7 +51,11 @@ template<> struct fwd_attend_ker_tile_dims<64> {
     constexpr static int tile_width = (64);
     constexpr static int qo_height  = (4*16);
     constexpr static int kv_height  = (8*16);
+#if defined(TK_ATTN_IS_FP8)
+    constexpr static int stages     = (2);
+#else
     constexpr static int stages     = (4);
+#endif
 };
 template<> struct fwd_attend_ker_tile_dims<128> {
     constexpr static int tile_width = (128);
@@ -228,6 +232,10 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
             warpgroup::mma_async_wait();
 
+#if defined(TK_ATTN_IS_FP8)
+            mul(att_block, att_block, scale);
+#endif
+
             if constexpr (is_causal) {
                 if (kv_idx == kv_iters-1 || kv_idx == kv_iters) {
                     const int q_blk = (seq_idx * (K::qo_height/kittens::TILE_ROW_DIM<QKDType>)) + warpid;
@@ -249,10 +257,6 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
                     right_fill(att_block, att_block, g.N % K::kv_height, kittens::base_types::constants<float>::neg_infty());
                 }
             }
-
-#if defined(TK_ATTN_IS_FP8)
-            mul(att_block, att_block, scale);
-#endif
 
             row_max(max_vec, att_block, max_vec);
 
