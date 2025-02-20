@@ -126,12 +126,15 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
     int kv_head_idx = blockIdx.y / g.hr;
     int seq_idx     = blockIdx.x * CONSUMER_WARPGROUPS;
 
-    __shared__ kittens::semaphore qsmem_semaphore, k_smem_arrived[K::stages], v_smem_arrived[K::stages], compute_done[K::stages];
+    __shared__ kittens::semaphore qsmem_semaphore, k_smem_arrived[K::stages], v_smem_arrived[K::stages], compute_done[K::stages], qk_done[K::stages];
     if (threadIdx.x == 0) {
         init_semaphore(qsmem_semaphore, 0, 1);
         for(int j = 0; j < K::stages; j++) {
             init_semaphore(k_smem_arrived[j], 0, 1);
             init_semaphore(v_smem_arrived[j], 0, 1);
+            if constexpr (D >= 128) {
+                init_semaphore(qk_done[j], CONSUMER_WARPGROUPS, 0);
+            }
             init_semaphore(compute_done[j], CONSUMER_WARPGROUPS, 0);
         }
 
@@ -168,12 +171,24 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         if(warpid == NUM_WORKERS-4) {
             for (auto kv_idx = pipe_idx - 1; kv_idx <= kv_iters; kv_idx++) {
                 coord<k_tile> kv_tile_idx = {blockIdx.z, kv_head_idx, kv_idx+1, 0};
+                if constexpr (D >= 128) {
+                    if (kv_idx >= pipe_idx) {
+                        wait(qk_done[(kv_idx-pipe_idx)%K::stages], ((kv_idx-(pipe_idx))/K::stages)%2);
+                    }
+                } else {
+                    if (kv_idx >= pipe_idx) {
+                        wait(compute_done[(kv_idx-pipe_idx)%K::stages], ((kv_idx-(pipe_idx))/K::stages)%2);
+                    }
+                }
                 tma::expect_bytes(k_smem_arrived[(kv_idx+1)%K::stages], sizeof(k_tile));
                 tma::load_async(k_smem[(kv_idx+1)%K::stages], g.k, kv_tile_idx, k_smem_arrived[(kv_idx+1)%K::stages]);
+                if constexpr (D >= 128) {
+                    if (kv_idx >= pipe_idx) {
+                        wait(compute_done[(kv_idx-pipe_idx)%K::stages], ((kv_idx-(pipe_idx))/K::stages)%2);
+                    }
+                }
                 tma::expect_bytes(v_smem_arrived[(kv_idx+1)%K::stages], sizeof(v_tile));
                 tma::load_async(v_smem[(kv_idx+1)%K::stages], g.v, kv_tile_idx, v_smem_arrived[(kv_idx+1)%K::stages]);
-
-                wait(compute_done[(kv_idx-(pipe_idx-1))%K::stages], ((kv_idx-(pipe_idx-1))/K::stages)%2);
             }
         }
     }
@@ -226,6 +241,9 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 #endif
 
             warpgroup::mma_async_wait();
+            if constexpr (D >= 128) {
+                if(warpgroup::laneid() == 0) arrive(qk_done[(kv_idx)%K::stages], 1);
+            }
 
 #if defined(TK_ATTN_IS_FP8)
             mul(att_block, att_block, scale);
