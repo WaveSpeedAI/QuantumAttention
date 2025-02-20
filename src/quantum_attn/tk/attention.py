@@ -85,6 +85,11 @@ template<int D> struct fwd_globals {
     // l_gl l;
     o_gl o;
 
+#if defined(TK_ATTN_IS_FP8)
+    float* scale_q;
+    float* scale_k;
+#endif
+
     const int N;
     const int hr;
 };
@@ -178,8 +183,19 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
         rt_fl<16, K::tile_width> o_reg;
 
-        // col_vec<rt_fl<16, K::kv_height>> max_vec, norm_vec, max_vec_last_scaled, max_vec_scaled;
+#if defined(TK_ATTN_IS_FP8)
+        col_vec<rt_fl<16, K::kv_height>> max_vec, norm_vec, max_vec_last;
+
+        float scale_q = g.scale_q[blockIdx.z*gridDim.y + blockIdx.y];
+        float scale_k = g.scale_k[blockIdx.z*gridDim.y + blockIdx.y];
+
+        float scale = scale_q * scale_k;
+        if constexpr (D == 64)       { scale *= 1.44269504089f*0.125f; }
+        else if constexpr (D == 128) { scale *= 1.44269504089f*0.08838834764f; }
+        else                         { scale *= 1.44269504089f*0.0625f; }
+#else
         col_vec<rt_fl<16, K::kv_height>> max_vec, norm_vec, max_vec_last_scaled;
+#endif
 
         neg_infty(max_vec);
         zero(norm_vec);
@@ -195,18 +211,20 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         wait(qsmem_semaphore, 0);
 
         for (auto kv_idx = 0; kv_idx <= kv_iters; kv_idx++) {
-            col_vec<rt_fl<16, K::kv_height>> max_vec_scaled;
-
             rt_fl<16, K::kv_height>  att_block;
             rt<DType, 16, K::kv_height>  att_block_mma;
 
             wait(k_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
             warpgroup::mm_ABt(att_block, q_o_smem[warpgroupid].q, k_smem[(kv_idx)%K::stages]);
 
+#if defined(TK_ATTN_IS_FP8)
+            copy(max_vec_last, max_vec);
+#else
             copy(max_vec_last_scaled, max_vec);
             if constexpr (D == 64)       { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.125f); }
             else if constexpr (D == 128) { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.08838834764f); }
             else                         { mul(max_vec_last_scaled, max_vec_last_scaled, 1.44269504089f*0.0625f); }
+#endif
 
             warpgroup::mma_async_wait();
 
@@ -232,8 +250,26 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
                 }
             }
 
+#if defined(TK_ATTN_IS_FP8)
+            mul(att_block, att_block, scale);
+#endif
+
             row_max(max_vec, att_block, max_vec);
 
+#if defined(TK_ATTN_IS_FP8)
+            sub_row(att_block, att_block, max_vec);
+            exp2(att_block, att_block);
+            // unary_map<base_ops::fast_exp2>(att_block, att_block);
+            sub(max_vec_last, max_vec_last, max_vec);
+            exp2(max_vec_last,       max_vec_last);
+            // unary_op<base_ops::fast_exp2>(max_vec_last, max_vec_last);
+            mul(norm_vec,            norm_vec,     max_vec_last);
+            row_sum(norm_vec,  att_block, norm_vec);
+            // add(att_block, att_block, 0.f);
+            copy(att_block_mma, att_block);
+            mul_row(o_reg, o_reg, max_vec_last);
+#else
+            col_vec<rt_fl<16, K::kv_height>> max_vec_scaled;
             if constexpr (D == 64) {
                 mul(att_block, att_block,    1.44269504089f*0.125f);
                 mul(max_vec_scaled, max_vec, 1.44269504089f*0.125f);
@@ -258,6 +294,7 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
             // add(att_block, att_block, 0.f);
             copy(att_block_mma, att_block);
             mul_row(o_reg, o_reg, max_vec_last_scaled);
+#endif
 
             wait(v_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
 
@@ -299,11 +336,19 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 #include <iostream>
 
 std::vector<torch::Tensor>
-attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::Tensor &v , bool causal)
+#if TK_ATTN_IS_FP8
+attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::Tensor &v, const torch::Tensor &scale_q, const torch::Tensor &scale_k, bool causal)
+#else
+attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::Tensor &v, bool causal)
+#endif
 {
     CHECK_CUDA(q);
     CHECK_CUDA(k);
     CHECK_CUDA(v);
+#if TK_ATTN_IS_FP8
+    CHECK_CUDA(scale_q);
+    CHECK_CUDA(scale_k);
+#endif
 
     TORCH_CHECK(q.device() == k.device(), "Q and K tensors must be on the same device");
     TORCH_CHECK(q.device() == v.device(), "Q and V tensors must be on the same device");
@@ -338,6 +383,19 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
     TORCH_CHECK(q.size(1) == qo_heads, "QO head dimension - idx 1 - must match for all inputs");
     TORCH_CHECK(k.size(1) == kv_heads, "KV head dimension - idx 1 - must match for all inputs");
     TORCH_CHECK(v.size(1) == kv_heads, "KV head dimension - idx 1 - must match for all inputs");
+
+if TK_ATTN_IS_FP8
+    TORCH_CHECK(scale_q.dtype() == torch::kFloat32, "Q scale tensor must be of type float32");
+    TORCH_CHECK(scale_k.dtype() == torch::kFloat32, "K scale tensor must be of type float32");
+
+    TORCH_CHECK(scale_q.dim() == 2, "Q scale tensor must have 2 dimensions");
+    TORCH_CHECK(scale_k.dim() == 2, "K scale tensor must have 2 dimensions");
+
+    TORCH_CHECK(scale_q.size(0) == batch, "Q scale batch dimension - idx 0 - must match for all inputs");
+    TORCH_CHECK(scale_k.size(0) == batch, "K scale batch dimension - idx 0 - must match for all inputs");
+    TORCH_CHECK(scale_q.size(1) == qo_heads, "Q scale head dimension - idx 1 - must match for all inputs");
+    TORCH_CHECK(scale_k.size(1) == kv_heads, "K scale head dimension - idx 1 - must match for all inputs");
+#endif
 
     torch::DeviceGuard device_guard(q.device());
 
@@ -376,6 +434,17 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
     // float* l_ptr = reinterpret_cast<float*>(l_vec.data_ptr<float>());
     // float* d_l   = reinterpret_cast<float*>(l_ptr);
 
+#if TK_ATTN_IS_FP8
+    torch::Tensor scale_q_ = scale_q.contiguous();
+    torch::Tensor scale_k_ = scale_k.contiguous();
+
+    void* scale_q_ptr = scale_q_.data_ptr();
+    void* scale_k_ptr = scale_k_.data_ptr();
+
+    float* d_scale_q = reinterpret_cast<float*>(scale_q_ptr);
+    float* d_scale_k = reinterpret_cast<float*>(scale_k_ptr);
+#endif
+
     auto stream = at::cuda::getCurrentCUDAStream().stream();
 
     if (head_dim == 64) {
@@ -404,7 +473,11 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
         // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), nullptr,  static_cast<unsigned int>(l_vec_stride_h)};
         o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), nullptr};
 
+#if TK_ATTN_IS_FP8
+        globals g{qg_arg, kg_arg, vg_arg/* , lg_arg */, og_arg, d_scale_q, d_scale_k, static_cast<int>(seq_len_kv), static_cast<int>(hr)};
+#else
         globals g{qg_arg, kg_arg, vg_arg/* , lg_arg */, og_arg, static_cast<int>(seq_len_kv), static_cast<int>(hr)};
+#endif
 
         auto mem_size = kittens::MAX_SHARED_MEMORY;
         // auto threads  = NUM_WORKERS * kittens::WARP_THREADS;
@@ -459,7 +532,11 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
         // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), nullptr,   static_cast<unsigned int>(l_vec_stride_h)};
         o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), nullptr};
 
+#if TK_ATTN_IS_FP8
+        globals g{qg_arg, kg_arg, vg_arg/* , lg_arg */, og_arg, d_scale_q, d_scale_k, static_cast<int>(seq_len_kv), static_cast<int>(hr)};
+#else
         globals g{qg_arg, kg_arg, vg_arg/* , lg_arg */, og_arg, static_cast<int>(seq_len_kv), static_cast<int>(hr)};
+#endif
 
         auto mem_size = kittens::MAX_SHARED_MEMORY;
         // auto threads  = NUM_WORKERS * kittens::WARP_THREADS;
@@ -514,7 +591,11 @@ attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::T
         // l_global lg_arg{d_l, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), nullptr,   static_cast<unsigned int>(l_vec_stride_h)};
         o_global og_arg{d_o, static_cast<unsigned int>(batch), static_cast<unsigned int>(qo_heads), static_cast<unsigned int>(seq_len_q), nullptr};
 
+#if TK_ATTN_IS_FP8
+        globals g{qg_arg, kg_arg, vg_arg/* , lg_arg */, og_arg, d_scale_q, d_scale_k, static_cast<int>(seq_len_kv), static_cast<int>(hr)};
+#else
         globals g{qg_arg, kg_arg, vg_arg/* , lg_arg */, og_arg, static_cast<int>(seq_len_kv), static_cast<int>(hr)};
+#endif
 
         auto mem_size = kittens::MAX_SHARED_MEMORY;
         // auto threads  = NUM_WORKERS * kittens::WARP_THREADS;
@@ -590,7 +671,9 @@ def load_tk_attention_module(dtype, is_fp8=False):
         module = load_inline(
             name=f"quantum_attn_tk_attention_dtype_{str(dtype).replace('torch.', '')}_is_fp8_{is_fp8}",
             cpp_sources=[
-                "std::vector<torch::Tensor> attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::Tensor &v, bool causal);"
+                "std::vector<torch::Tensor> attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::Tensor &v, const torch::Tensor &scale_q, const torch::Tensor &scale_k, bool causal);"
+                if is_fp8
+                else "std::vector<torch::Tensor> attention_forward(const torch::Tensor &q, const torch::Tensor &k, const torch::Tensor &v, bool causal);"
             ],
             cuda_sources=[TK_ATTENTION_SOURCE],
             extra_cflags=["-std=c++20", "-O3", "-DNDEBUG"],
