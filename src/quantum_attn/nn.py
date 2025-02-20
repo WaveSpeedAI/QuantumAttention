@@ -20,8 +20,15 @@ def _dynamically_quantize_fp8(t: torch.Tensor, *, reduction_dim=-1) -> Tuple[tor
 
 
 def dynamically_quantize_fp8(t: torch.Tensor, *, reduction_dim=-1) -> Tuple[torch.Tensor, torch.Tensor]:
+    from torch._subclasses.fake_tensor import is_fake
+
+    if any(is_fake(x) for x in (t,)):
+        out = _dynamically_quantize_fp8(t, reduction_dim=reduction_dim)
+        return out
+
     if torch.compiler.is_dynamo_compiling():
-        return _dynamically_quantize_fp8(t, reduction_dim=reduction_dim)
+        out = _dynamically_quantize_fp8(t, reduction_dim=reduction_dim)
+        return out
 
     with _set_compilation_env():
         with torch._dynamo.utils.disable_cache_limit():
@@ -406,8 +413,8 @@ def _fp8_attention_forward_wrapper(
             reduction_dim = query.dim() - 1
         else:
             raise ValueError(f"Unsupported scaling_method: {scaling_method}")
-        query, scale_q = dynamically_quantize_fp8(query, reduction_dim=reduction_dim)
-        key, scale_k = dynamically_quantize_fp8(key, reduction_dim=reduction_dim)
+        query, scale_q = _dynamically_quantize_fp8(query, reduction_dim=reduction_dim)
+        key, scale_k = _dynamically_quantize_fp8(key, reduction_dim=reduction_dim)
 
     return quantum_attn_ops.fp8_attention_forward(
         query,
