@@ -59,6 +59,9 @@ def _validate_tk_tma_input(
     scale=None,
     scaling_method=None,
 ) -> Tuple[bool, str]:
+    if any(t.requires_grad for t in (query, key, value)):
+        return False, "NYI: query, key, and value must be leaf tensors"
+
     if attn_mask is not None:
         return False, "NYI: attn_mask must be None"
     if dropout_p != 0.0:
@@ -139,6 +142,9 @@ def _validate_triton_tma_sdpa_input(
     scale=None,
     scaling_method=None,
 ) -> Tuple[bool, str]:
+    if any(t.requires_grad for t in (query, key, value)):
+        return False, "NYI: query, key, and value must be leaf tensors"
+
     if attn_mask is not None:
         return False, "NYI: attn_mask must be None"
     if dropout_p != 0.0:
@@ -200,7 +206,7 @@ def _validate_triton_tma_sdpa_input(
 
 
 @torch.compiler.assume_constant_result
-def _pre_check_can_use_tk_tma_attention_forward(device):
+def _pre_check_can_use_tk_tma_attention(device):
     if device.type != "cuda":
         return False, f"Expected device to be on a CUDA device, but got device: {device} instead."
     if not config.attention.enable_tk_tma_kernel:
@@ -210,7 +216,7 @@ def _pre_check_can_use_tk_tma_attention_forward(device):
     return True, ""
 
 
-def can_use_tk_tma_attention_forward(
+def can_use_tk_tma_attention(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -221,7 +227,7 @@ def can_use_tk_tma_attention_forward(
     scale: Optional[float] = None,
     scaling_method: Optional[str] = None,
 ) -> Tuple[bool, str]:
-    supported, reason = _pre_check_can_use_tk_tma_attention_forward(device=query.device)
+    supported, reason = _pre_check_can_use_tk_tma_attention(device=query.device)
     if not supported:
         return False, reason
 
@@ -235,7 +241,7 @@ def can_use_tk_tma_attention_forward(
 
 
 @torch.compiler.assume_constant_result
-def _pre_check_can_use_triton_tma_attention_forward(device):
+def _pre_check_can_use_triton_tma_attention(device):
     if device.type != "cuda":
         return False, f"Expected device to be on a CUDA device, but got device: {device} instead."
     if not config.attention.enable_triton_tma_kernel:
@@ -249,7 +255,7 @@ def _pre_check_can_use_triton_tma_attention_forward(device):
     return True, ""
 
 
-def can_use_triton_tma_attention_forward(
+def can_use_triton_tma_attention(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -260,7 +266,7 @@ def can_use_triton_tma_attention_forward(
     scale: Optional[float] = None,
     scaling_method: Optional[str] = None,
 ) -> Tuple[bool, str]:
-    supported, reason = _pre_check_can_use_triton_tma_attention_forward(device=query.device)
+    supported, reason = _pre_check_can_use_triton_tma_attention(device=query.device)
     if not supported:
         return False, reason
 
@@ -273,12 +279,7 @@ def can_use_triton_tma_attention_forward(
     return True, ""
 
 
-@torch.compiler.assume_constant_result
-def _skip_supported_check() -> bool:
-    return config.attention.skip_supported_check
-
-
-def can_use_attention_forward(
+def can_use_attention(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -289,11 +290,11 @@ def can_use_attention_forward(
     scale: Optional[float] = None,
     scaling_method: Optional[str] = None,
 ) -> Tuple[bool, str]:
-    if _skip_supported_check():
+    if checks.get_constant_attr("quantum_attn.config", "attention.skip_supported_check"):
         return True, ""
     prefix_and_funcs = [
-        ("tk_tma", can_use_tk_tma_attention_forward),
-        ("triton_tma_sdpa", can_use_triton_tma_attention_forward),
+        ("tk_tma", can_use_tk_tma_attention),
+        ("triton_tma_sdpa", can_use_triton_tma_attention),
     ]
     reasons = []
     for prefix, func in prefix_and_funcs:
@@ -306,7 +307,7 @@ def can_use_attention_forward(
     return False, " ".join(f"[{reason}]" for reason in reasons)
 
 
-def _attention_forward_wrapper(
+def _attention_wrapper(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -321,7 +322,7 @@ def _attention_forward_wrapper(
     )
 
 
-def attention_forward(
+def attention(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -336,7 +337,7 @@ def attention_forward(
     if not torch._dynamo.is_inductor_supported():
         raise RuntimeError("attention_forward requires inductor support")
 
-    supported, reason = can_use_attention_forward(
+    supported, reason = can_use_attention(
         query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
     )
     if not supported:
@@ -348,7 +349,7 @@ def attention_forward(
     from torch._subclasses.fake_tensor import is_fake
 
     if any(is_fake(x) for x in (query, key, value, attn_mask)):
-        out = _attention_forward_wrapper(
+        out = _attention_wrapper(
             query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
         )
         return out
@@ -358,13 +359,13 @@ def attention_forward(
         for x in [query, key, value]:
             torch._dynamo.mark_static(x, -3)
             torch._dynamo.mark_static(x, -1)
-        out = _attention_forward_wrapper(
+        out = _attention_wrapper(
             query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
         )
         return out
 
     if config.attention.force_eager_fallback:
-        out = _attention_forward_wrapper(
+        out = _attention_wrapper(
             query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
         )
         return out
@@ -373,7 +374,7 @@ def attention_forward(
         with torch._dynamo.utils.disable_cache_limit():
             with _temp_remove_pre_dispatch_torch_function_mode():
                 out = torch.compile(
-                    _attention_forward_wrapper,
+                    _attention_wrapper,
                     backend="inductor",
                     fullgraph=True,
                     dynamic=config.dynamo.dynamic,
@@ -390,7 +391,7 @@ def attention_forward(
                 return out
 
 
-def _fp8_attention_forward_wrapper(
+def _fp8_attention_wrapper(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -429,7 +430,7 @@ def _fp8_attention_forward_wrapper(
     )
 
 
-def fp8_attention_forward(
+def fp8_attention(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -447,7 +448,7 @@ def fp8_attention_forward(
     if not torch._dynamo.is_inductor_supported():
         raise RuntimeError("fp8_attention_forward requires inductor support")
 
-    supported, reason = can_use_attention_forward(
+    supported, reason = can_use_attention(
         query,
         key,
         value,
@@ -466,7 +467,7 @@ def fp8_attention_forward(
     from torch._subclasses.fake_tensor import is_fake
 
     if any(is_fake(x) for x in (query, key, value, attn_mask, scale_q, scale_k)):
-        out = _fp8_attention_forward_wrapper(
+        out = _fp8_attention_wrapper(
             query,
             key,
             value,
@@ -485,7 +486,7 @@ def fp8_attention_forward(
         for x in [query, key, value]:
             torch._dynamo.mark_static(x, -3)
             torch._dynamo.mark_static(x, -1)
-        out = _fp8_attention_forward_wrapper(
+        out = _fp8_attention_wrapper(
             query,
             key,
             value,
@@ -500,7 +501,7 @@ def fp8_attention_forward(
         return out
 
     if config.attention.force_eager_fallback:
-        out = _fp8_attention_forward_wrapper(
+        out = _fp8_attention_wrapper(
             query,
             key,
             value,
@@ -518,7 +519,7 @@ def fp8_attention_forward(
         with torch._dynamo.utils.disable_cache_limit():
             with _temp_remove_pre_dispatch_torch_function_mode():
                 out = torch.compile(
-                    _fp8_attention_forward_wrapper,
+                    _fp8_attention_wrapper,
                     backend="inductor",
                     fullgraph=True,
                     dynamic=config.dynamo.dynamic,

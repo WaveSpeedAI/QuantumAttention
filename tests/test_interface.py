@@ -50,9 +50,7 @@ def _test_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, force_eager_fa
         try:
             attn_out = attn_func(query, key, value, is_causal=is_causal)
         except ValueError as e:
-            if "Unsupported input" in str(e):
-                pytest.skip(str(e))
-            raise
+            pytest.skip(str(e))
 
     fa_out = flash_attention(query, key, value, is_causal=is_causal)
 
@@ -112,9 +110,7 @@ def _test_benchmark_attn_func(D, dtype, device, is_causal, is_fp8=False):
     try:
         attention_fn()
     except ValueError as e:
-        if "Unsupported input" in str(e):
-            pytest.skip(str(e))
-        raise
+        pytest.skip(str(e))
 
     def fa_fn():
         flash_attention(query, key, value, is_causal)

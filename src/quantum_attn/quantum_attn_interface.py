@@ -3,12 +3,7 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 
-from quantum_attn.nn import (
-    attention_forward,
-    can_use_attention_forward,
-    dynamically_quantize_fp8,
-    fp8_attention_forward,
-)
+from quantum_attn.nn import attention, can_use_attention, dynamically_quantize_fp8, fp8_attention
 
 __all__ = [
     "attn_func",
@@ -53,7 +48,7 @@ def attn_func(
     *,
     scale: float = None,
 ) -> torch.Tensor:
-    return attention_forward(
+    return attention(
         query,
         key,
         value,
@@ -78,7 +73,7 @@ def attn_func_with_fallback(
     *,
     scale: float = None,
 ) -> torch.Tensor:
-    supported, reason = can_use_attention_forward(
+    supported, reason = can_use_attention(
         query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
     )
     if supported:
@@ -118,7 +113,7 @@ def fp8_attn_func(
 ) -> torch.Tensor:
     if scaling_method is None:
         scaling_method = "head-wise"
-    return fp8_attention_forward(
+    return fp8_attention(
         query,
         key,
         value,
@@ -149,7 +144,7 @@ def fp8_attn_func_with_fallback(
 ) -> torch.Tensor:
     if scaling_method is None:
         scaling_method = "head-wise"
-    if can_use_attention_forward(
+    if can_use_attention(
         query,
         key,
         value,
@@ -193,7 +188,7 @@ def fp8_token_wise_attn_func(
     scale_q: Optional[torch.Tensor] = None,
     scale_k: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    return fp8_attention_forward(
+    return fp8_attention(
         query,
         key,
         value,
@@ -221,7 +216,7 @@ def fp8_token_wise_attn_func_with_fallback(
     *,
     scale: float = None,
 ) -> torch.Tensor:
-    if can_use_attention_forward(
+    if can_use_attention(
         query,
         key,
         value,

@@ -1,7 +1,18 @@
 import functools
 
+import importlib
+
 import torch
 from packaging import version
+
+
+@torch.compiler.assume_constant_result
+def get_constant_attr(module, attr):
+    obj = importlib.import_module(module)
+    attr = attr.split(".")
+    for a in attr:
+        obj = getattr(obj, a)
+    return obj
 
 
 def torch_version_compare(op, v):
