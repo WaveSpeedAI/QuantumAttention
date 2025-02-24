@@ -28,6 +28,7 @@ def fp8_attention(query, key, value, is_causal=False):
     return quantum_attn_interface.fp8_attn_func(query, key, value, is_causal=is_causal)
 
 
+@torch.no_grad()
 def _test_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, force_eager_fallback, is_fp8=False):
     if is_causal and S_Q != S_KV:
         pytest.skip("Causal attention is only supported for S_Q == S_KV")
@@ -68,7 +69,6 @@ def _test_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, force_eager_fa
 @pytest.mark.parametrize("device", ["cuda"])
 @pytest.mark.parametrize("is_causal", [False, True])
 @pytest.mark.parametrize("force_eager_fallback", [False])
-@torch.no_grad()
 def test_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, force_eager_fallback):
     _test_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, force_eager_fallback)
 
@@ -82,11 +82,11 @@ def test_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, force_eager_fal
 @pytest.mark.parametrize("device", ["cuda"])
 @pytest.mark.parametrize("is_causal", [False, True])
 @pytest.mark.parametrize("force_eager_fallback", [False])
-@torch.no_grad()
 def test_fp8_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, force_eager_fallback):
     _test_attn_func(B, H, S_Q, S_KV, D, dtype, device, is_causal, force_eager_fallback, is_fp8=True)
 
 
+@torch.no_grad()
 def _test_benchmark_attn_func(D, dtype, device, is_causal, is_fp8=False):
     import triton
 
@@ -142,7 +142,6 @@ def _test_benchmark_attn_func(D, dtype, device, is_causal, is_fp8=False):
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("device", ["cuda"])
 @pytest.mark.parametrize("is_causal", [False, True])
-@torch.no_grad()
 def test_benchmark_attn_func(D, dtype, device, is_causal, is_fp8=False):
     _test_benchmark_attn_func(D, dtype, device, is_causal, is_fp8)
 
@@ -151,6 +150,5 @@ def test_benchmark_attn_func(D, dtype, device, is_causal, is_fp8=False):
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @pytest.mark.parametrize("device", ["cuda"])
 @pytest.mark.parametrize("is_causal", [False, True])
-@torch.no_grad()
 def test_benchmark_fp8_attn_func(D, dtype, device, is_causal):
     _test_benchmark_attn_func(D, dtype, device, is_causal, is_fp8=True)
