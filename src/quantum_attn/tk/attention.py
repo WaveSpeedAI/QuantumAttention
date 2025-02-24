@@ -46,12 +46,18 @@ template<> __device__ inline float2 fast_exp2::op<float2>(const float2 &x) { ret
 }
 }
 
+// unary_map<base_ops::fast_exp2>(att_block, att_block);
+
 template<int D> struct fwd_attend_ker_tile_dims {};
 template<> struct fwd_attend_ker_tile_dims<64> {
     constexpr static int tile_width = (64);
     constexpr static int qo_height  = (4*16);
     constexpr static int kv_height  = (8*16);
+#if defined(TK_ATTN_IS_FP8)
+    constexpr static int stages     = (3);
+#else
     constexpr static int stages     = (2);
+#endif
 };
 template<> struct fwd_attend_ker_tile_dims<128> {
     constexpr static int tile_width = (128);
@@ -198,9 +204,9 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
         rt_fl<16, K::tile_width> o_reg;
 
-#if defined(TK_ATTN_IS_FP8)
-        col_vec<rt_fl<16, K::kv_height>> max_vec, norm_vec, max_vec_last;
+        col_vec<rt_fl<16, K::kv_height>> max_vec, norm_vec, max_vec_last_scaled, att_block_sum;
 
+#if defined(TK_ATTN_IS_FP8)
         float scale_q = g.scale_q[blockIdx.z*gridDim.y + blockIdx.y];
         float scale_k = g.scale_k[blockIdx.z*gridDim.y + blockIdx.y];
 
@@ -208,8 +214,6 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
         if constexpr (D == 64)       { scale *= 1.44269504089f*0.125f; }
         else if constexpr (D == 128) { scale *= 1.44269504089f*0.08838834764f; }
         else                         { scale *= 1.44269504089f*0.0625f; }
-#else
-        col_vec<rt_fl<16, K::kv_height>> max_vec, norm_vec, max_vec_last_scaled;
 #endif
 
         neg_infty(max_vec);
@@ -231,9 +235,10 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
 
             wait(k_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
             warpgroup::mm_ABt(att_block, q_o_smem[warpgroupid].q, k_smem[(kv_idx)%K::stages]);
+            col_vec<rt_fl<16, K::kv_height>> max_vec_scaled;
 
 #if defined(TK_ATTN_IS_FP8)
-            copy(max_vec_last, max_vec);
+            mul(max_vec_last_scaled, max_vec, scale);
 #else
             if constexpr (D == 64)       { mul(max_vec_last_scaled, max_vec, 1.44269504089f*0.125f); }
             else if constexpr (D == 128) { mul(max_vec_last_scaled, max_vec, 1.44269504089f*0.08838834764f); }
@@ -244,10 +249,6 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
             if constexpr (D >= 128) {
                 if(warpgroup::laneid() == 0) arrive(qk_done[(kv_idx)%K::stages], 1);
             }
-
-#if defined(TK_ATTN_IS_FP8)
-            mul(att_block, att_block, scale);
-#endif
 
             if constexpr (is_causal) {
                 if (kv_idx == kv_iters-1 || kv_idx == kv_iters) {
@@ -274,19 +275,9 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
             row_max(max_vec, att_block, max_vec);
 
 #if defined(TK_ATTN_IS_FP8)
-            sub_row(att_block, att_block, max_vec);
-            exp2(att_block, att_block);
-            // unary_map<base_ops::fast_exp2>(att_block, att_block);
-            sub(max_vec_last, max_vec_last, max_vec);
-            exp2(max_vec_last,       max_vec_last);
-            // unary_op<base_ops::fast_exp2>(max_vec_last, max_vec_last);
-            mul(norm_vec,            norm_vec,     max_vec_last);
-            row_sum(norm_vec,  att_block, norm_vec);
-            // add(att_block, att_block, 0.f);
-            copy(att_block_mma, att_block);
-            mul_row(o_reg, o_reg, max_vec_last);
+            mul(att_block, att_block, scale);
+            mul(max_vec_scaled, max_vec, scale);
 #else
-            col_vec<rt_fl<16, K::kv_height>> max_vec_scaled;
             if constexpr (D == 64) {
                 mul(att_block, att_block,    1.44269504089f*0.125f);
                 mul(max_vec_scaled, max_vec, 1.44269504089f*0.125f);
@@ -299,22 +290,18 @@ void fwd_attend_ker(const __grid_constant__ fwd_globals<D> g) {
                 mul(att_block, att_block,    1.44269504089f*0.0625f);
                 mul(max_vec_scaled, max_vec, 1.44269504089f*0.0625f);
             }
+#endif
 
             sub_row(att_block, att_block, max_vec_scaled);
             exp2(att_block, att_block);
-            // unary_map<base_ops::fast_exp2>(att_block, att_block);
             sub(max_vec_last_scaled, max_vec_last_scaled, max_vec_scaled);
-            exp2(max_vec_last_scaled,       max_vec_last_scaled);
-            // unary_op<base_ops::fast_exp2>(max_vec_last_scaled, max_vec_last_scaled);
-            mul(norm_vec,            norm_vec,     max_vec_last_scaled);
-            row_sum(norm_vec,  att_block, norm_vec);
-            // add(att_block, att_block, 0.f);
+            exp2(max_vec_last_scaled, max_vec_last_scaled);
+            mul(norm_vec, norm_vec, max_vec_last_scaled);
+            row_sum(norm_vec, att_block, norm_vec);
             copy(att_block_mma, att_block);
             mul_row(o_reg, o_reg, max_vec_last_scaled);
-#endif
 
             wait(v_smem_arrived[(kv_idx)%K::stages], (kv_idx/K::stages)%2);
-
             warpgroup::mma_AB(o_reg, att_block_mma, v_smem[(kv_idx)%K::stages]);
             warpgroup::mma_async_wait();
 
