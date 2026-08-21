@@ -9,3 +9,8 @@ This project is licensed under a custom license. Individuals or organizations wi
 For those with an annual revenue equal to or greater than 5,000,000 USD, a separate commercial license is required.
 
 For more details, please refer to the [LICENSE](./LICENSE.txt) file.
+
+---
+
+**[WaveSpeed AI](https://wavespeed.ai/)** — hosted inference for image, video, audio and 3D models.
+Try it in the browser: **[Image generator](https://wavespeed.ai/image-generator)** · **[Video generator](https://wavespeed.ai/video-generator)**
